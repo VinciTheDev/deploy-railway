@@ -12,6 +12,8 @@ const DATA_DIR = path.join(__dirname, "data");
 const USERS_FILE = path.join(DATA_DIR, "users.json");
 const ADMIN_USERNAME = "admin";
 const ADMIN_PASSWORD = "001212";
+let useMemoryUserStore = false;
+let memoryUsers = [];
 
 const SLOT_TIMES = Array.from({ length: 12 }, (_, index) => {
   const hour = 8 + index;
@@ -183,27 +185,59 @@ function buildUserPayload(user) {
 }
 
 async function ensureDataStore() {
-  await fs.mkdir(DATA_DIR, { recursive: true });
-
   try {
+    await fs.mkdir(DATA_DIR, { recursive: true });
     await fs.access(USERS_FILE);
-  } catch (_error) {
-    await fs.writeFile(USERS_FILE, "[]", "utf8");
+  } catch (error) {
+    try {
+      await fs.writeFile(USERS_FILE, "[]", "utf8");
+    } catch (_writeError) {
+      useMemoryUserStore = true;
+      memoryUsers = [];
+      console.warn("Arquivo de usuarios indisponivel. Aplicacao usara armazenamento em memoria.");
+    }
   }
 }
 
 async function readUsers() {
-  const raw = await fs.readFile(USERS_FILE, "utf8");
-  const sanitized = raw.replace(/^\uFEFF/, "").trim();
-  const users = JSON.parse(sanitized || "[]");
-  return users.map((user) => ({
-    ...user,
-    plan: normalizeUserPlan(user),
-  }));
+  if (useMemoryUserStore) {
+    return memoryUsers.map((user) => ({
+      ...user,
+      plan: normalizeUserPlan(user),
+    }));
+  }
+
+  try {
+    const raw = await fs.readFile(USERS_FILE, "utf8");
+    const sanitized = raw.replace(/^\uFEFF/, "").trim();
+    const users = JSON.parse(sanitized || "[]");
+    return users.map((user) => ({
+      ...user,
+      plan: normalizeUserPlan(user),
+    }));
+  } catch (error) {
+    useMemoryUserStore = true;
+    console.warn("Falha ao ler users.json. Aplicacao alternou para armazenamento em memoria.");
+    return memoryUsers.map((user) => ({
+      ...user,
+      plan: normalizeUserPlan(user),
+    }));
+  }
 }
 
 async function writeUsers(users) {
-  await fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2), "utf8");
+  if (useMemoryUserStore) {
+    memoryUsers = users.map((user) => ({ ...user }));
+    return;
+  }
+
+  try {
+    await fs.writeFile(USERS_FILE, JSON.stringify(users, null, 2), "utf8");
+  } catch (error) {
+    useMemoryUserStore = true;
+    memoryUsers = users.map((user) => ({ ...user }));
+    console.warn("Falha ao gravar users.json. Aplicacao alternou para armazenamento em memoria.");
+  }
 }
 
 async function hashPassword(password) {
@@ -336,61 +370,66 @@ app.get("/api/health", (_req, res) => {
 });
 
 app.post("/api/register", async (req, res) => {
-  const { username, displayName, phone, password } = req.body;
+  try {
+    const { username, displayName, phone, password } = req.body;
 
-  if (!username || !displayName || !phone || !password) {
-    return res.status(400).json({ message: "Preencha usuario, nome de exibicao, telefone e senha." });
-  }
+    if (!username || !displayName || !phone || !password) {
+      return res.status(400).json({ message: "Preencha usuario, nome de exibicao, telefone e senha." });
+    }
 
-  if (String(password).length < 6) {
-    return res.status(400).json({ message: "A senha deve ter pelo menos 6 caracteres." });
-  }
+    if (String(password).length < 6) {
+      return res.status(400).json({ message: "A senha deve ter pelo menos 6 caracteres." });
+    }
 
-  const normalizedPhone = String(phone).trim();
-  if (!normalizedPhone) {
-    return res.status(400).json({ message: "Telefone obrigatorio." });
-  }
+    const normalizedPhone = String(phone).trim();
+    if (!normalizedPhone) {
+      return res.status(400).json({ message: "Telefone obrigatorio." });
+    }
 
-  const users = await readUsers();
-  const normalizedUsername = String(username).trim().toLowerCase();
+    const users = await readUsers();
+    const normalizedUsername = String(username).trim().toLowerCase();
 
-  if (normalizedUsername === ADMIN_USERNAME) {
-    return res.status(409).json({ message: "Usuario indisponivel." });
-  }
+    if (normalizedUsername === ADMIN_USERNAME) {
+      return res.status(409).json({ message: "Usuario indisponivel." });
+    }
 
-  const alreadyExists = users.some(
-    (item) => String(item.username || "").toLowerCase() === normalizedUsername
-  );
+    const alreadyExists = users.some(
+      (item) => String(item.username || "").toLowerCase() === normalizedUsername
+    );
 
-  if (alreadyExists) {
-    return res.status(409).json({ message: "Usuario ja cadastrado." });
-  }
+    if (alreadyExists) {
+      return res.status(409).json({ message: "Usuario ja cadastrado." });
+    }
 
-  const passwordHash = await hashPassword(password);
-  const maxId = users.reduce((acc, item) => Math.max(acc, Number(item.id) || 0), 0);
+    const passwordHash = await hashPassword(password);
+    const maxId = users.reduce((acc, item) => Math.max(acc, Number(item.id) || 0), 0);
 
-  users.push({
-    id: maxId + 1,
-    username: normalizedUsername,
-    name: String(displayName).trim(),
-    phone: normalizedPhone,
-    role: "user",
-    passwordHash,
-    plan: {
-      type: "none",
-      preferredCut: "",
-      usage: {
-        monthKey: getCurrentMonthKey(),
-        commonCutsUsed: 0,
+    users.push({
+      id: maxId + 1,
+      username: normalizedUsername,
+      name: String(displayName).trim(),
+      phone: normalizedPhone,
+      role: "user",
+      passwordHash,
+      plan: {
+        type: "none",
+        preferredCut: "",
+        usage: {
+          monthKey: getCurrentMonthKey(),
+          commonCutsUsed: 0,
+        },
+        updatedAt: new Date().toISOString(),
       },
-      updatedAt: new Date().toISOString(),
-    },
-    createdAt: new Date().toISOString(),
-  });
+      createdAt: new Date().toISOString(),
+    });
 
-  await writeUsers(users);
+    await writeUsers(users);
 
-  return res.status(201).json({ message: "Cadastro realizado com sucesso." });
+    return res.status(201).json({ message: "Cadastro realizado com sucesso." });
+  } catch (error) {
+    console.error("Erro em /api/register:", error);
+    return res.status(500).json({ message: "Erro interno ao registrar usuario." });
+  }
 });
 
 app.get("/api/plans", authMiddleware, async (_req, res) => {
@@ -517,32 +556,37 @@ app.post("/api/plans/confirm-payment", authMiddleware, async (req, res) => {
 });
 
 app.post("/api/login", async (req, res) => {
-  const { username, password } = req.body;
+  try {
+    const { username, password } = req.body;
 
-  if (!username || !password) {
-    return res.status(400).json({ message: "Informe usuario e senha." });
+    if (!username || !password) {
+      return res.status(400).json({ message: "Informe usuario e senha." });
+    }
+
+    const users = await readUsers();
+    const normalizedUsername = String(username).trim().toLowerCase();
+    const user = users.find((item) => String(item.username || "").toLowerCase() === normalizedUsername);
+
+    if (!user) {
+      return res.status(401).json({ message: "Credenciais invalidas." });
+    }
+
+    const validPassword = await verifyPassword(password, user.passwordHash);
+    if (!validPassword) {
+      return res.status(401).json({ message: "Credenciais invalidas." });
+    }
+
+    const token = createSession(user.id);
+
+    return res.json({
+      message: "Login realizado.",
+      token,
+      user: buildUserPayload(user),
+    });
+  } catch (error) {
+    console.error("Erro em /api/login:", error);
+    return res.status(500).json({ message: "Erro interno ao realizar login." });
   }
-
-  const users = await readUsers();
-  const normalizedUsername = String(username).trim().toLowerCase();
-  const user = users.find((item) => String(item.username || "").toLowerCase() === normalizedUsername);
-
-  if (!user) {
-    return res.status(401).json({ message: "Credenciais invalidas." });
-  }
-
-  const validPassword = await verifyPassword(password, user.passwordHash);
-  if (!validPassword) {
-    return res.status(401).json({ message: "Credenciais invalidas." });
-  }
-
-  const token = createSession(user.id);
-
-  return res.json({
-    message: "Login realizado.",
-    token,
-    user: buildUserPayload(user),
-  });
 });
 
 app.post("/api/logout", authMiddleware, (req, res) => {

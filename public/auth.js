@@ -25,6 +25,20 @@ function toggleForm(target) {
   setFeedback("", "");
 }
 
+async function readJsonSafe(response) {
+  const raw = await response.text();
+
+  if (!raw) {
+    return {};
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch (_error) {
+    return {};
+  }
+}
+
 async function checkExistingSession() {
   const token = localStorage.getItem(TOKEN_KEY);
   if (!token) {
@@ -72,7 +86,7 @@ registerForm.addEventListener("submit", async (event) => {
       body: JSON.stringify(payload),
     });
 
-    const data = await response.json();
+    const data = await readJsonSafe(response);
 
     if (!response.ok) {
       setFeedback(data.message || "Nao foi possivel registrar.", "error");
@@ -111,7 +125,7 @@ loginForm.addEventListener("submit", async (event) => {
       body: JSON.stringify(payload),
     });
 
-    const data = await response.json();
+    const data = await readJsonSafe(response);
 
     if (!response.ok) {
       setFeedback(data.message || "Nao foi possivel entrar.", "error");
