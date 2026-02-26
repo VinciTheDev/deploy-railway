@@ -1,0 +1,83 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Evilazio Barbershop | Inicio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <header class="topbar card">
+        <div>
+          <h1 class="topbar-title">Evilazio Barbershop</h1>
+          <p id="welcomeText" class="topbar-subtitle">Bem-vindo.</p>
+        </div>
+        <button id="logoutBtn" type="button" class="outline-btn">Sair</button>
+      </header>
+
+      <section class="card">
+        <h2>Agendamento</h2>
+
+        <div class="form">
+          <label>
+            Servico
+            <select id="serviceSelect" required>
+              <option value="">Selecione</option>
+              <option value="Corte Social">Corte Social</option>
+              <option value="Corte Degrade">Corte Degradê</option>
+              <option value="Corte Navalhado">Corte Navalhado</option>
+              <option value="Barba">Barba</option>
+              <option value="Sobrancelha">Sobrancelha</option>
+              <option value="Pézinho">Pézinho</option>
+              <option value="Corte + barba">Corte + barba</option>
+              <option value="Corte + barba + sobrancelha">Corte + Barba + Sobrancelha</option>
+            </select>
+          </label>
+          <p id="serviceDurationInfo" class="section-label"></p>
+
+          <label>
+            Telefone
+            <input id="phoneInput" type="tel" required />
+          </label>
+
+          <label>
+            Dia do corte
+            <select id="daySelect" required></select>
+          </label>
+
+          <div>
+            <p class="section-label">Horarios (08h - 19h)</p>
+            <div id="slotGrid" class="slot-grid"></div>
+          </div>
+
+          <button id="createPaymentBtn" type="button">Ir para pagamento PIX</button>
+          <p id="feedback" class="feedback" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section id="paymentCard" class="card hidden">
+        <h2>Pagamento PIX</h2>
+        <div class="payment-layout">
+          <img id="pixQrImage" class="pix-qr" alt="QR Code PIX" />
+          <div class="payment-data">
+            <p><strong>Servico:</strong> <span id="paymentService"></span></p>
+            <p><strong>Tempo medio:</strong> <span id="paymentDuration"></span></p>
+            <p><strong>Chave PIX:</strong> <span id="pixKey"></span></p>
+            <p><strong>Codigo PIX:</strong> <span id="pixCode"></span></p>
+            <button id="confirmPaymentBtn" type="button">Ja paguei, confirmar agendamento</button>
+          </div>
+        </div>
+        <p id="paymentFeedback" class="feedback" aria-live="polite"></p>
+      </section>
+    </main>
+
+    <script src="home.js"></script>
+  </body>
+</html>

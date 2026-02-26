@@ -1,0 +1,73 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Evilazio Barbershop | Login</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="landing-mode">
+    <main class="container auth-container">
+      <section class="hero">
+        <h1>Evilazio Barbershop</h1>
+        <p>Efetue seu login ou crie sua conta</p>
+      </section>
+
+      <section class="card auth-card">
+        <div class="auth-switch" role="tablist" aria-label="Acesso">
+          <button class="switch-btn active" type="button" data-target="login">Login</button>
+          <button class="switch-btn" type="button" data-target="register">Registro</button>
+        </div>
+
+        <form id="loginForm" class="form auth-form">
+          <label>
+            Usuário
+            <input type="text" name="username" required />
+          </label>
+
+          <label>
+            Senha
+            <input type="password" name="password" minlength="6" required />
+          </label>
+
+          <button type="submit">Entrar</button>
+        </form>
+
+        <form id="registerForm" class="form auth-form hidden">
+          <label>
+            Usuário
+            <input type="text" name="username" required />
+          </label>
+
+          <label>
+            Nome de Exibição (Coloque seu nome e sobrenome)
+            <input type="text" name="displayName" required />
+          </label>
+
+          <label>
+            Telefone
+            <input type="tel" name="phone" required />
+          </label>
+
+          <label>
+            Senha
+            <input type="password" name="password" minlength="6" required />
+          </label>
+
+          <button type="submit">Criar conta</button>
+        </form>
+
+        <p id="authFeedback" class="feedback" aria-live="polite"></p>
+      </section>
+    </main>
+
+    <script src="auth.js"></script>
+  </body>
+</html>
+

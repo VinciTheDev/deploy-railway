@@ -1,0 +1,65 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Evilazio Barbershop | Planos</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="landing-mode">
+    <main class="container auth-container">
+      <section class="card">
+        <h2>Planos de assinatura</h2>
+        <p class="section-label">Plano atual: <strong id="currentPlan">-</strong></p>
+
+        <div class="service-grid">
+          <article>
+            <h3>Plano Comum</h3>
+            <p id="commonDetails">Inclui cortes de cabelo no mês.</p>
+          </article>
+          <article>
+            <h3>Plano Plus</h3>
+            <p id="plusDetails">Cobertura completa de serviços.</p>
+          </article>
+        </div>
+
+        <div class="form" style="margin-top: 12px;">
+          <label>
+            Escolha o plano
+            <select id="planTypeSelect">
+              <option value="common">Plano Comum</option>
+              <option value="plus">Plano Plus</option>
+            </select>
+          </label>
+
+          <button id="createPlanPaymentBtn" type="button">Gerar pagamento PIX do plano</button>
+          <button id="backBtn" type="button" class="outline-btn">Voltar para landing</button>
+          <p id="premiumFeedback" class="feedback" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section id="planPaymentCard" class="card hidden">
+        <h2>Pagamento PIX do plano</h2>
+        <div class="payment-layout">
+          <img id="planPixQrImage" class="pix-qr" alt="QR Code PIX do plano" />
+          <div class="payment-data">
+            <p><strong>Plano:</strong> <span id="planName"></span></p>
+            <p><strong>Valor:</strong> <span id="planAmount"></span></p>
+            <p><strong>Chave PIX:</strong> <span id="planPixKey"></span></p>
+            <p><strong>Codigo PIX:</strong> <span id="planPixCode"></span></p>
+            <button id="confirmPlanPaymentBtn" type="button">Já paguei, confirmar plano</button>
+          </div>
+        </div>
+        <p id="planPaymentFeedback" class="feedback" aria-live="polite"></p>
+      </section>
+    </main>
+
+    <script src="premium.js"></script>
+  </body>
+</html>

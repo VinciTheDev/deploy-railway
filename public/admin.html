@@ -1,0 +1,57 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Evilazio Barbershop | Admin</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="landing-mode">
+    <main class="container admin-container">
+      <header class="topbar card">
+        <div>
+          <h1 class="topbar-title">Painel Admin</h1>
+          <p class="topbar-subtitle">Planilha de agendamentos (08h - 19h)</p>
+        </div>
+        <button id="logoutBtn" type="button" class="outline-btn">Sair</button>
+      </header>
+
+      <section class="card">
+        <div class="admin-controls">
+          <label>
+            Dia
+            <select id="daySelect"></select>
+          </label>
+        </div>
+
+        <div class="table-wrap">
+          <table class="admin-table">
+            <thead>
+              <tr>
+                <th>Horario</th>
+                <th>Status</th>
+                <th>Cliente</th>
+                <th>Servico</th>
+                <th>Tempo medio</th>
+                <th>Telefone</th>
+                <th>Acoes</th>
+              </tr>
+            </thead>
+            <tbody id="adminRows"></tbody>
+          </table>
+        </div>
+
+        <p id="adminFeedback" class="feedback" aria-live="polite"></p>
+      </section>
+    </main>
+
+    <script src="admin.js"></script>
+  </body>
+</html>
+

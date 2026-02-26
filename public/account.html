@@ -1,0 +1,49 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Evilazio Barbershop | Conta</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="container auth-container">
+      <section class="card">
+        <h2>Editar conta</h2>
+        <p class="section-label">
+          Plano atual: <strong id="planInfo">-</strong>
+        </p>
+        <form id="accountForm" class="form">
+          <label>
+            Usuário
+            <input id="usernameInput" type="text" readonly />
+          </label>
+          <label>
+            Nome de exibição
+            <input id="displayNameInput" name="displayName" type="text" required />
+          </label>
+          <label>
+            Telefone
+            <input id="phoneInput" name="phone" type="tel" required />
+          </label>
+          <label>
+            Nova senha (opcional)
+            <input id="passwordInput" name="password" type="password" minlength="6" />
+          </label>
+          <button type="submit">Salvar alterações</button>
+          <button id="buyPlusBtn" type="button">Comprar Plano Plus</button>
+          <button id="backBtn" type="button" class="outline-btn">Voltar para a página inicial</button>
+          <p id="accountFeedback" class="feedback" aria-live="polite"></p>
+        </form>
+      </section>
+    </main>
+
+    <script src="account.js"></script>
+  </body>
+</html>

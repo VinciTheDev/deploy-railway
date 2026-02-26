@@ -1,0 +1,168 @@
+﻿<!DOCTYPE html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Evilazio Barbershop</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body class="landing-mode">
+    <main class="container landing-container">
+      <section class="card landing-banner landing-banner-brand">
+        <div>
+          <p class="landing-kicker">Evilazio Barbershop</p>
+          <h1 class="landing-headline">A MELHOR BARBEARIA DE NATAL</h1>
+        </div>
+        <img class="brand-logo" src="images/Barbershop.png" alt="Logo Evilazio Barbearia" />
+      </section>
+
+      <section class="landing-split">
+        <article class="card landing-hero">
+          <div class="landing-media">
+            <img
+              class="landing-media-image"
+              src="images/Paging.png"
+              alt="Barbeiro em atendimento na Evilazio Barbershop"
+            />
+          </div>
+          <div class="landing-hero-text">
+            <h2>O barbeiro por trás da cadeira</h2>
+            <p class="landing-copy">
+              Evilázio começou cortando o cabelo de amigos na escola, com máquina simples e visão clara:
+              fazer cada cliente sair melhor do que entrou. Com o tempo, técnica e identidade,
+              o espaço virou ponto de confiança para quem quer estilo com constância.
+            </p>
+            <p class="landing-copy">
+              Aqui, cada corte é pensado para o seu formato de rosto, rotina e atitude.
+            </p>
+            <div class="landing-metrics">
+              <span>Acabamento em navalha</span>
+              <span>Especialista em degradê</span>
+              <span>Agenda organizada</span>
+            </div>
+          </div>
+        </article>
+
+        <aside class="card action-panel panel-blue">
+          <div>
+            <h2 id="panelTitle">Painel inicial</h2>
+            <p id="panelSubtitle" class="topbar-subtitle">Escolha para onde deseja ir.</p>
+          </div>
+          <div class="action-grid" id="actionGrid">
+            <button id="btnLogin" type="button">Entrar</button>
+            <button id="btnRegister" type="button" class="outline-btn">Registrar</button>
+            <button id="btnAccount" type="button" class="hidden">Ver/editar conta</button>
+            <button id="btnBooking" type="button" class="hidden">Solicitar agendamento</button>
+            <button id="btnPremium" type="button" class="hidden">Comprar Plano Plus</button>
+            <button id="btnAdminSchedule" type="button" class="hidden">Painel de cortes marcados</button>
+            <button id="btnLogout" type="button" class="outline-btn hidden">Sair</button>
+          </div>
+        </aside>
+      </section>
+
+      <section class="card landing-services">
+        <h2>Serviços em destaque</h2>
+        <div class="service-grid">
+          <article>
+            <h3>Corte Social</h3>
+            <p>Visual clássico e alinhado para rotina profissional.</p>
+          </article>
+          <article>
+            <h3>Corte Degradê</h3>
+            <p>Transição precisa com acabamento moderno.</p>
+          </article>
+          <article>
+            <h3>Corte Navalhado</h3>
+            <p>Textura e definição para um estilo mais marcante.</p>
+          </article>
+          <article>
+            <h3>Barba e Acabamentos</h3>
+            <p>Contorno técnico, simetria e finalização limpa.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="bookingSection" class="card hidden">
+        <h2>Agendamento</h2>
+
+        <div class="form">
+          <label>
+            Servico
+            <select id="serviceSelect" required>
+              <option value="">Selecione</option>
+              <option value="Corte Social">Corte Social</option>
+              <option value="Corte Degrade">Corte Degradê</option>
+              <option value="Corte Navalhado">Corte Navalhado</option>
+              <option value="Barba">Barba</option>
+              <option value="Sobrancelha">Sobrancelha</option>
+              <option value="Pézinho">Pézinho</option>
+              <option value="Corte + barba">Corte + barba</option>
+              <option value="Corte + barba + sobrancelha">Corte + Barba + Sobrancelha</option>
+            </select>
+          </label>
+          <p id="serviceDurationInfo" class="section-label"></p>
+
+          <label>
+            Telefone
+            <input id="phoneInput" type="tel" required />
+          </label>
+
+          <label>
+            Dia do corte
+            <select id="daySelect" required></select>
+          </label>
+
+          <label>
+            Forma de pagamento
+            <select id="paymentMethodSelect" required>
+              <option value="pix">PIX</option>
+              <option value="plan">Pagar com premium/plano</option>
+            </select>
+          </label>
+
+          <div>
+            <p class="section-label">Horarios (08h - 19h)</p>
+            <div id="slotGrid" class="slot-grid"></div>
+          </div>
+
+          <button id="createPaymentBtn" type="button">Ir para pagamento PIX</button>
+          <p id="feedback" class="feedback" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section id="paymentCard" class="card hidden">
+        <h2>Pagamento PIX</h2>
+        <div class="payment-layout">
+          <img id="pixQrImage" class="pix-qr" alt="QR Code PIX" />
+          <div class="payment-data">
+            <p><strong>Servico:</strong> <span id="paymentService"></span></p>
+            <p><strong>Tempo medio:</strong> <span id="paymentDuration"></span></p>
+            <p><strong>Chave PIX:</strong> <span id="pixKey"></span></p>
+            <p><strong>Codigo PIX:</strong> <span id="pixCode"></span></p>
+            <button id="confirmPaymentBtn" type="button">Ja paguei, confirmar agendamento</button>
+          </div>
+        </div>
+        <p id="paymentFeedback" class="feedback" aria-live="polite"></p>
+      </section>
+
+      <div id="planNotifyModal" class="plan-modal-overlay hidden" role="dialog" aria-modal="true">
+        <div class="plan-modal-card">
+          <h3>Aviso do plano</h3>
+          <p id="planNotifyText" class="section-label"></p>
+          <div class="plan-modal-actions">
+            <button id="switchToPixBtn" type="button" class="outline-btn">Voltar e pagar com PIX</button>
+            <button id="upgradePlanBtn" type="button">Aprimorar plano</button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <script src="landing.js"></script>
+  </body>
+</html>
