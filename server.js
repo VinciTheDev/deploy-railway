@@ -8,13 +8,27 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const scryptAsync = promisify(crypto.scrypt);
 
-const DATABASE_URL = process.env.DATABASE_URL;
-if (!DATABASE_URL) {
-  throw new Error("DATABASE_URL nao configurada. Crie um banco Postgres no Railway e conecte ao servico.");
+const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRESQL_URL;
+const hasPgParts =
+  process.env.PGHOST &&
+  process.env.PGPORT &&
+  process.env.PGUSER &&
+  process.env.PGPASSWORD &&
+  process.env.PGDATABASE;
+
+if (!DATABASE_URL && !hasPgParts) {
+  throw new Error(
+    "Banco nao configurado. Defina DATABASE_URL (ou POSTGRES_URL) ou as variaveis PGHOST/PGPORT/PGUSER/PGPASSWORD/PGDATABASE no Railway."
+  );
 }
 
 const pool = new Pool({
-  connectionString: DATABASE_URL,
+  connectionString: DATABASE_URL || undefined,
+  host: process.env.PGHOST || undefined,
+  port: process.env.PGPORT ? Number(process.env.PGPORT) : undefined,
+  user: process.env.PGUSER || undefined,
+  password: process.env.PGPASSWORD || undefined,
+  database: process.env.PGDATABASE || undefined,
   ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : undefined,
 });
 
@@ -48,11 +62,28 @@ const CUT_SERVICE_KEYS = new Set([
 const COMMON_MONTHLY_FREE_CUTS = 2;
 const COMMON_MONTHLY_PRICE = 39.9;
 const PLUS_MONTHLY_PRICE = 79.9;
+const PIX_KEY = process.env.PIX_KEY || "ee96c7d1-b09b-46ad-a324-42ee01713b38";
+const PIX_QR_IMAGE_URL = process.env.PIX_QR_IMAGE_URL || "/images/qrcode-pix.png";
 
 const sessions = new Map();
 
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
+
+function buildPixPayment(prefix, description) {
+  const paymentCode = `${prefix}${Date.now()}${crypto.randomBytes(3).toString("hex")}`;
+  const qrText = `PIX|${PIX_KEY}|${paymentCode}|${description}`;
+  const qrImageUrl =
+    PIX_QR_IMAGE_URL ||
+    `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(qrText)}`;
+
+  return {
+    pixKey: PIX_KEY,
+    paymentCode,
+    qrText,
+    qrImageUrl,
+  };
+}
 
 function getCurrentMonthContext() {
   const now = new Date();
@@ -278,9 +309,13 @@ async function initDatabase() {
   `);
 
   await query(`
+    DROP INDEX IF EXISTS idx_bookings_active_slot;
+  `);
+
+  await query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_active_slot
     ON bookings(day, time)
-    WHERE status IN ('pending_payment', 'confirmed');
+    WHERE status = 'confirmed';
   `);
 }
 
@@ -398,7 +433,7 @@ async function getBookingStatusForSlot(day, time) {
       FROM bookings
       WHERE day = $1
         AND time = $2
-        AND status IN ('pending_payment', 'confirmed')
+        AND status = 'confirmed'
       LIMIT 1;
     `,
     [day, time]
@@ -412,7 +447,7 @@ async function buildDaySchedule(day) {
       SELECT *
       FROM bookings
       WHERE day = $1
-        AND status IN ('pending_payment', 'confirmed');
+        AND status = 'confirmed';
     `,
     [day]
   );
@@ -615,9 +650,7 @@ app.post(
     }
 
     const amount = normalizedPlanType === "plus" ? PLUS_MONTHLY_PRICE : COMMON_MONTHLY_PRICE;
-    const pixKey = `${crypto.randomBytes(6).toString("hex")}@pix.evilazio`;
-    const paymentCode = `PLAN${Date.now()}${crypto.randomBytes(3).toString("hex")}`;
-    const qrText = `PIX|${pixKey}|${paymentCode}|Plano ${normalizedPlanType.toUpperCase()} Evilazio`;
+    const payment = buildPixPayment("PLAN", `Plano ${normalizedPlanType.toUpperCase()} Evilazio`);
 
     const insert = await query(
       `
@@ -625,7 +658,7 @@ app.post(
         VALUES ($1, $2, '', $3, 'pending_payment', $4, $5, $6)
         RETURNING id;
       `,
-      [req.user.id, normalizedPlanType, amount, pixKey, paymentCode, qrText]
+      [req.user.id, normalizedPlanType, amount, payment.pixKey, payment.paymentCode, payment.qrText]
     );
 
     const purchaseId = insert.rows[0].id;
@@ -636,10 +669,10 @@ app.post(
       planType: normalizedPlanType,
       amount,
       payment: {
-        pixKey,
-        paymentCode,
-        qrText,
-        qrImageUrl: `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(qrText)}`,
+        pixKey: payment.pixKey,
+        paymentCode: payment.paymentCode,
+        qrText: payment.qrText,
+        qrImageUrl: payment.qrImageUrl,
       },
     });
   })
@@ -852,9 +885,7 @@ app.post(
         });
       }
 
-      const pixKey = `${crypto.randomBytes(6).toString("hex")}@pix.evilazio`;
-      const paymentCode = `EVLZ${Date.now()}${crypto.randomBytes(3).toString("hex")}`;
-      const qrText = `PIX|${pixKey}|${paymentCode}|Evilazio Barbershop`;
+      const payment = buildPixPayment("EVLZ", "Evilazio Barbershop");
 
       const insertPixBooking = await client.query(
         `
@@ -874,9 +905,9 @@ app.post(
           serviceDuration,
           normalizedDay,
           String(time),
-          pixKey,
-          paymentCode,
-          qrText,
+          payment.pixKey,
+          payment.paymentCode,
+          payment.qrText,
         ]
       );
 
@@ -888,10 +919,10 @@ app.post(
         bookingId: booking.id,
         durationMinutes: booking.durationMinutes,
         payment: {
-          pixKey,
-          paymentCode,
-          qrText,
-          qrImageUrl: `https://api.qrserver.com/v1/create-qr-code/?size=220x220&data=${encodeURIComponent(qrText)}`,
+          pixKey: payment.pixKey,
+          paymentCode: payment.paymentCode,
+          qrText: payment.qrText,
+          qrImageUrl: payment.qrImageUrl,
         },
       });
     } catch (error) {
@@ -919,18 +950,28 @@ app.post(
       return res.status(400).json({ message: "Booking invalido." });
     }
 
-    const result = await query(
-      `
-        UPDATE bookings
-        SET status = 'confirmed',
-            paid_at = NOW()
-        WHERE id = $1
-          AND user_id = $2
-          AND status = 'pending_payment'
-        RETURNING *;
-      `,
-      [bookingId, req.user.id]
-    );
+    let result;
+    try {
+      result = await query(
+        `
+          UPDATE bookings
+          SET status = 'confirmed',
+              paid_at = NOW()
+          WHERE id = $1
+            AND user_id = $2
+            AND status = 'pending_payment'
+          RETURNING *;
+        `,
+        [bookingId, req.user.id]
+      );
+    } catch (error) {
+      if (error.code === "23505") {
+        return res.status(409).json({
+          message: "Horario ja foi ocupado por outro pagamento confirmado. Escolha outro horario.",
+        });
+      }
+      throw error;
+    }
 
     const booking = result.rows[0];
     if (!booking) {
