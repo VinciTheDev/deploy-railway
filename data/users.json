@@ -1,38 +1,17 @@
-[
+﻿[
   {
     "id": 1,
     "username": "admin",
     "name": "Administrador",
     "role": "admin",
-    "passwordHash": "7e8fb4515ef9025047110a1e016e26bd:4ab1c5fae7b3bcd0ee6e27e71da372f470e95010ad906d2e0270b41b55687a436b396f0a3a0b98df2f8283e26bb42c686fdf6f012a8c5a19940b01de8a6687cc",
-    "createdAt": "2026-02-22T22:27:23.601Z",
+    "passwordHash": "",
     "plan": {
       "type": "none",
       "preferredCut": "",
       "usage": {
-        "monthKey": "2026-02",
+        "monthKey": "",
         "commonCutsUsed": 0
-      },
-      "updatedAt": "2026-02-26T22:16:33.883Z"
-    }
-  },
-  {
-    "id": 2,
-    "username": "vinicius",
-    "name": "Vinícius Dantas",
-    "role": "user",
-    "passwordHash": "fa838caeb9ef8288f0c497f26df3e9d4:7fdd3d6e3958f8271457d22a398aac52295e769ec9d541e985791d9729d238b62b592149d194268825659fd0db3a9217778b2eb76766759f88515a86fa5ea946",
-    "createdAt": "2026-02-23T21:27:11.485Z",
-    "phone": "84920029209",
-    "updatedAt": "2026-02-25T19:12:52.923Z",
-    "plan": {
-      "type": "plus",
-      "preferredCut": "",
-      "usage": {
-        "monthKey": "2026-02",
-        "commonCutsUsed": 0
-      },
-      "updatedAt": "2026-02-26T22:17:31.808Z"
+      }
     }
   }
 ]
