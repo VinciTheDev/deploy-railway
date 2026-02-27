@@ -9,6 +9,7 @@ const SERVICE_DURATIONS = {
   pezinho: 20,
   corte_barba: 45,
   corte_barba_sobrancelha: 50,
+  teste_pix_1_centavo: 5,
 };
 
 const btnLogin = document.getElementById("btnLogin");
@@ -73,6 +74,7 @@ function normalizeServiceKey(service) {
   if (normalized === "pezinho") return "pezinho";
   if (normalized === "corte + barba") return "corte_barba";
   if (normalized === "corte + barba + sobrancelha") return "corte_barba_sobrancelha";
+  if (normalized === "teste pix (r$0,01)" || normalized === "teste pix 1 centavo") return "teste_pix_1_centavo";
 
   return "";
 }
