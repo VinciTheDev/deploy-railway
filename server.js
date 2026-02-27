@@ -661,23 +661,54 @@ app.post(
 
     const amount = normalizedPlanType === "plus" ? PLUS_MONTHLY_PRICE : COMMON_MONTHLY_PRICE;
     const payment = buildPixPayment("PLAN", `Plano ${normalizedPlanType.toUpperCase()} Evilazio`);
+    const client = await pool.connect();
+    let purchaseId;
+    let user;
 
-    const insert = await query(
-      `
-        INSERT INTO plan_purchases (user_id, plan_type, preferred_cut, amount, status, pix_key, payment_code, qr_text)
-        VALUES ($1, $2, '', $3, 'pending_payment', $4, $5, $6)
-        RETURNING id;
-      `,
-      [req.user.id, normalizedPlanType, amount, payment.pixKey, payment.paymentCode, payment.qrText]
-    );
+    try {
+      await client.query("BEGIN");
 
-    const purchaseId = insert.rows[0].id;
+      const insert = await client.query(
+        `
+          INSERT INTO plan_purchases (
+            user_id, plan_type, preferred_cut, amount, status, pix_key, payment_code, qr_text, paid_at
+          )
+          VALUES ($1, $2, '', $3, 'confirmed', $4, $5, $6, NOW())
+          RETURNING id;
+        `,
+        [req.user.id, normalizedPlanType, amount, payment.pixKey, payment.paymentCode, payment.qrText]
+      );
+      purchaseId = insert.rows[0].id;
+
+      await client.query(
+        `
+          UPDATE users
+          SET plan_type = $1,
+              preferred_cut = '',
+              plan_month_key = $2,
+              common_cuts_used = 0,
+              updated_at = NOW()
+          WHERE id = $3;
+        `,
+        [normalizedPlanType, getCurrentMonthKey(), req.user.id]
+      );
+
+      const userResult = await client.query("SELECT * FROM users WHERE id = $1", [req.user.id]);
+      user = userResult.rows[0];
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
 
     return res.status(201).json({
-      message: "Pagamento PIX do plano gerado.",
+      message: `Plano ${normalizedPlanType === "plus" ? "Plus" : "Comum"} ativado com sucesso.`,
       purchaseId,
       planType: normalizedPlanType,
       amount,
+      user: buildUserPayload(user),
       payment: {
         pixKey: payment.pixKey,
         paymentCode: payment.paymentCode,
@@ -901,9 +932,9 @@ app.post(
         `
           INSERT INTO bookings (
             user_id, username, display_name, phone, service, duration_minutes,
-            day, time, status, payment_method, payment_pix_key, payment_code, payment_qr_text
+            day, time, status, payment_method, payment_pix_key, payment_code, payment_qr_text, paid_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending_payment', 'pix', $9, $10, $11)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confirmed', 'pix', $9, $10, $11, NOW())
           RETURNING *;
         `,
         [
@@ -925,7 +956,7 @@ app.post(
       const booking = parseBookingRow(insertPixBooking.rows[0]);
 
       return res.status(201).json({
-        message: "Reserva criada. Realize o pagamento para confirmar.",
+        message: "Pagamento PIX recebido. Agendamento confirmado.",
         bookingId: booking.id,
         durationMinutes: booking.durationMinutes,
         payment: {

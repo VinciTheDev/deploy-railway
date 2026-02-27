@@ -129,6 +129,12 @@ createPlanPaymentBtn.addEventListener("click", async () => {
     planPaymentCard.classList.remove("hidden");
     setFeedback(data.message, "success");
     setPlanPaymentFeedback("Pagamento recebido. A ativacao do plano ocorre automaticamente.", "");
+    if (data.user?.plan?.type === "plus") {
+      currentPlan.textContent = "Plano Plus";
+    } else if (data.user?.plan?.type === "common") {
+      const cut = data.user.plan.preferredCut ? ` (${data.user.plan.preferredCut})` : "";
+      currentPlan.textContent = `Plano Comum${cut}`;
+    }
   } catch (_error) {
     setFeedback("Erro de conexao com o servidor.", "error");
   } finally {
