@@ -62,7 +62,7 @@ const CUT_SERVICE_KEYS = new Set([
 const COMMON_MONTHLY_FREE_CUTS = 2;
 const COMMON_MONTHLY_PRICE = 39.9;
 const PLUS_MONTHLY_PRICE = 79.9;
-const PIX_KEY = process.env.PIX_KEY || "ee96c7d1-b09b-46ad-a324-42ee01713b38";
+const PIX_KEY = process.env.PIX_KEY || "74cf1734-d27d-4d2f-ad2d-4365f5ce7973";
 const PIX_QR_IMAGE_URL = process.env.PIX_QR_IMAGE_URL || "/images/qrcode-pix.png";
 const APP_TIMEZONE = process.env.APP_TIMEZONE || "America/Fortaleza";
 
