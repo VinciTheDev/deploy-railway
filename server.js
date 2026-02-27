@@ -65,7 +65,7 @@ const COMMON_MONTHLY_PRICE = 39.9;
 const PLUS_MONTHLY_PRICE = 79.9;
 const PAYMENT_EXPIRATION_MINUTES = Number.parseInt(process.env.PAYMENT_EXPIRATION_MINUTES || "20", 10);
 const PAYMENT_SWEEP_INTERVAL_MS = Number.parseInt(process.env.PAYMENT_SWEEP_INTERVAL_MS || "30000", 10);
-const PIX_KEY = process.env.PIX_KEY || "74cf1734-d27d-4d2f-ad2d-4365f5ce7973";
+const PIX_KEY = "ee96c7d1-b09b-46ad-a324-42ee01713b38";
 const PIX_QR_IMAGE_URL = process.env.PIX_QR_IMAGE_URL || "/images/qrcode-pix.png";
 const APP_TIMEZONE = process.env.APP_TIMEZONE || "America/Fortaleza";
 const PAYMENT_WEBHOOK_TOKEN = process.env.PAYMENT_WEBHOOK_TOKEN || "";
@@ -242,10 +242,87 @@ function getPaymentSweepIntervalMs() {
 
 function normalizeWebhookStatus(status) {
   const normalized = String(status || "").toLowerCase().trim();
-  if (["paid", "confirmed", "approved", "succeeded"].includes(normalized)) {
+  if (
+    [
+      "paid",
+      "confirmed",
+      "approved",
+      "succeeded",
+      "completed",
+      "received",
+      "recebido",
+      "confirmado",
+      "concluido",
+      "liquidated",
+      "settled",
+    ].includes(normalized)
+  ) {
     return "paid";
   }
   return normalized;
+}
+
+function extractWebhookToken(req) {
+  const headerToken = req.headers["x-payment-webhook-token"];
+  const authHeader = req.headers.authorization || "";
+  const bearerToken = authHeader.startsWith("Bearer ") ? authHeader.slice(7).trim() : "";
+  const queryToken = String(req.query.token || "").trim();
+  const bodyToken = String(req.body?.token || req.body?.webhookToken || "").trim();
+  return String(headerToken || bearerToken || queryToken || bodyToken || "").trim();
+}
+
+function extractWebhookPaymentCode(body) {
+  return String(
+    body?.paymentCode ||
+      body?.payment_code ||
+      body?.externalReference ||
+      body?.external_reference ||
+      body?.reference ||
+      body?.reference_id ||
+      body?.txid ||
+      body?.transactionId ||
+      body?.transaction_id ||
+      body?.metadata?.paymentCode ||
+      body?.metadata?.payment_code ||
+      ""
+  ).trim();
+}
+
+function extractWebhookPaidAt(body) {
+  const value =
+    body?.paidAt ||
+    body?.paid_at ||
+    body?.approvedAt ||
+    body?.approved_at ||
+    body?.dateApproved ||
+    body?.date_approved ||
+    body?.data?.paidAt ||
+    body?.data?.paid_at ||
+    body?.data?.approvedAt ||
+    body?.data?.approved_at ||
+    null;
+
+  if (!value) {
+    return new Date();
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+}
+
+function extractWebhookStatus(body) {
+  return normalizeWebhookStatus(
+    body?.status ||
+      body?.paymentStatus ||
+      body?.payment_status ||
+      body?.event ||
+      body?.eventType ||
+      body?.event_type ||
+      body?.data?.status ||
+      body?.data?.paymentStatus ||
+      body?.data?.payment_status ||
+      ""
+  );
 }
 
 async function query(text, params = []) {
@@ -1105,33 +1182,130 @@ app.get(
 app.post(
   "/api/payments/webhook",
   asyncHandler(async (req, res) => {
-    if (!PAYMENT_WEBHOOK_TOKEN) {
-      return res.status(503).json({ message: "Webhook de pagamento nao configurado." });
-    }
-
-    const receivedToken = req.headers["x-payment-webhook-token"];
-    if (receivedToken !== PAYMENT_WEBHOOK_TOKEN) {
+    const receivedToken = extractWebhookToken(req);
+    if (PAYMENT_WEBHOOK_TOKEN && receivedToken !== PAYMENT_WEBHOOK_TOKEN) {
       return res.status(401).json({ message: "Webhook nao autorizado." });
     }
 
-    const paymentCode = String(req.body.paymentCode || "").trim();
-    const status = normalizeWebhookStatus(req.body.status);
-    const paidAt = req.body.paidAt ? new Date(req.body.paidAt) : new Date();
+    const paymentCode = extractWebhookPaymentCode(req.body);
+    const status = extractWebhookStatus(req.body);
+    const paidAtValue = extractWebhookPaidAt(req.body);
+    const bookingId = Number.parseInt(
+      req.body?.bookingId || req.body?.booking_id || req.body?.metadata?.bookingId || req.body?.metadata?.booking_id,
+      10
+    );
+    const purchaseId = Number.parseInt(
+      req.body?.purchaseId ||
+        req.body?.purchase_id ||
+        req.body?.planPurchaseId ||
+        req.body?.plan_purchase_id ||
+        req.body?.metadata?.purchaseId ||
+        req.body?.metadata?.purchase_id,
+      10
+    );
 
-    if (!paymentCode) {
-      return res.status(400).json({ message: "paymentCode obrigatorio." });
+    if (!paymentCode && !Number.isInteger(bookingId) && !Number.isInteger(purchaseId)) {
+      return res.status(400).json({
+        message: "Informe paymentCode, bookingId ou purchaseId no webhook.",
+      });
     }
 
     if (status !== "paid") {
       return res.json({ ok: true, ignored: true, reason: "status_not_paid" });
     }
 
-    const paidAtValue = Number.isNaN(paidAt.getTime()) ? new Date() : paidAt;
     const client = await pool.connect();
 
     try {
       await client.query("BEGIN");
       await expirePendingPayments(client);
+
+      if (Number.isInteger(purchaseId)) {
+        const directPurchaseResult = await client.query(
+          `
+            SELECT *
+            FROM plan_purchases
+            WHERE id = $1
+              AND status = 'pending_payment'
+              AND (expires_at IS NULL OR expires_at > NOW())
+            LIMIT 1
+            FOR UPDATE;
+          `,
+          [purchaseId]
+        );
+
+        const directPurchase = directPurchaseResult.rows[0];
+        if (directPurchase) {
+          await client.query(
+            `
+              UPDATE plan_purchases
+              SET status = 'confirmed',
+                  paid_at = $2
+              WHERE id = $1;
+            `,
+            [directPurchase.id, paidAtValue]
+          );
+
+          await client.query(
+            `
+              UPDATE users
+              SET plan_type = $1,
+                  preferred_cut = '',
+                  plan_month_key = $2,
+                  common_cuts_used = 0,
+                  updated_at = NOW()
+              WHERE id = $3;
+            `,
+            [directPurchase.plan_type, getCurrentMonthKey(), directPurchase.user_id]
+          );
+
+          await client.query("COMMIT");
+          return res.json({
+            ok: true,
+            type: "plan_purchase",
+            id: directPurchase.id,
+            status: "confirmed",
+          });
+        }
+      }
+
+      if (Number.isInteger(bookingId)) {
+        const directBookingResult = await client.query(
+          `
+            SELECT *
+            FROM bookings
+            WHERE id = $1
+              AND status = 'pending_payment'
+              AND (expires_at IS NULL OR expires_at > NOW())
+            LIMIT 1
+            FOR UPDATE;
+          `,
+          [bookingId]
+        );
+
+        const directBooking = directBookingResult.rows[0];
+        if (directBooking) {
+          await client.query(
+            `
+              UPDATE bookings
+              SET status = 'confirmed',
+                  paid_at = $2
+              WHERE id = $1
+                AND status = 'pending_payment'
+              RETURNING id;
+            `,
+            [directBooking.id, paidAtValue]
+          );
+
+          await client.query("COMMIT");
+          return res.json({
+            ok: true,
+            type: "booking",
+            id: directBooking.id,
+            status: "confirmed",
+          });
+        }
+      }
 
       const purchaseResult = await client.query(
         `
