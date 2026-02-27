@@ -64,6 +64,7 @@ const COMMON_MONTHLY_FREE_CUTS = 2;
 const COMMON_MONTHLY_PRICE = 39.9;
 const PLUS_MONTHLY_PRICE = 79.9;
 const PAYMENT_EXPIRATION_MINUTES = Number.parseInt(process.env.PAYMENT_EXPIRATION_MINUTES || "20", 10);
+const PAYMENT_SWEEP_INTERVAL_MS = Number.parseInt(process.env.PAYMENT_SWEEP_INTERVAL_MS || "30000", 10);
 const PIX_KEY = process.env.PIX_KEY || "74cf1734-d27d-4d2f-ad2d-4365f5ce7973";
 const PIX_QR_IMAGE_URL = process.env.PIX_QR_IMAGE_URL || "/images/qrcode-pix.png";
 const APP_TIMEZONE = process.env.APP_TIMEZONE || "America/Fortaleza";
@@ -230,6 +231,13 @@ function getPaymentExpirationMinutes() {
 
 function buildPaymentExpiryDate() {
   return new Date(Date.now() + getPaymentExpirationMinutes() * 60 * 1000);
+}
+
+function getPaymentSweepIntervalMs() {
+  if (!Number.isFinite(PAYMENT_SWEEP_INTERVAL_MS) || PAYMENT_SWEEP_INTERVAL_MS < 5000) {
+    return 30000;
+  }
+  return PAYMENT_SWEEP_INTERVAL_MS;
 }
 
 function normalizeWebhookStatus(status) {
@@ -1377,6 +1385,16 @@ Promise.resolve()
   .then(initDatabase)
   .then(ensureAdminOnly)
   .then(() => {
+    const sweepTimer = setInterval(() => {
+      expirePendingPayments().catch((error) => {
+        console.error("Falha ao expirar pagamentos pendentes:", error);
+      });
+    }, getPaymentSweepIntervalMs());
+
+    if (typeof sweepTimer.unref === "function") {
+      sweepTimer.unref();
+    }
+
     app.listen(PORT, () => {
       console.log(`Evilazio Barbershop online em http://localhost:${PORT}`);
     });
