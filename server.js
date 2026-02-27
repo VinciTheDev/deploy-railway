@@ -325,7 +325,7 @@ async function initDatabase() {
   await query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_active_slot
     ON bookings(day, time)
-    WHERE status = 'confirmed';
+    WHERE status IN ('pending_payment', 'confirmed');
   `);
 }
 
@@ -443,7 +443,7 @@ async function getBookingStatusForSlot(day, time) {
       FROM bookings
       WHERE day = $1
         AND time = $2
-        AND status = 'confirmed'
+        AND status IN ('pending_payment', 'confirmed')
       LIMIT 1;
     `,
     [day, time]
@@ -457,7 +457,7 @@ async function buildDaySchedule(day) {
       SELECT *
       FROM bookings
       WHERE day = $1
-        AND status = 'confirmed';
+        AND status IN ('pending_payment', 'confirmed');
     `,
     [day]
   );
@@ -932,9 +932,9 @@ app.post(
         `
           INSERT INTO bookings (
             user_id, username, display_name, phone, service, duration_minutes,
-            day, time, status, payment_method, payment_pix_key, payment_code, payment_qr_text, paid_at
+            day, time, status, payment_method, payment_pix_key, payment_code, payment_qr_text
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'confirmed', 'pix', $9, $10, $11, NOW())
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending_payment', 'pix', $9, $10, $11)
           RETURNING *;
         `,
         [
@@ -956,7 +956,7 @@ app.post(
       const booking = parseBookingRow(insertPixBooking.rows[0]);
 
       return res.status(201).json({
-        message: "Pagamento PIX recebido. Agendamento confirmado.",
+        message: "Pagamento PIX gerado. Aguarde confirmacao para liberar o horario como ocupado.",
         bookingId: booking.id,
         durationMinutes: booking.durationMinutes,
         payment: {
@@ -1038,6 +1038,55 @@ app.get(
     );
 
     return res.json(result.rows.map(parseBookingRow));
+  })
+);
+
+app.post(
+  "/api/admin/bookings/:bookingId/confirm-payment",
+  authMiddleware,
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const bookingId = Number.parseInt(req.params.bookingId, 10);
+
+    if (!Number.isInteger(bookingId)) {
+      return res.status(400).json({ message: "Agendamento invalido." });
+    }
+
+    let result;
+    try {
+      result = await query(
+        `
+          UPDATE bookings
+          SET status = 'confirmed',
+              paid_at = NOW()
+          WHERE id = $1
+            AND status = 'pending_payment'
+          RETURNING *;
+        `,
+        [bookingId]
+      );
+    } catch (error) {
+      if (error.code === "23505") {
+        return res.status(409).json({ message: "Horario ja ocupado por outro agendamento confirmado." });
+      }
+      throw error;
+    }
+
+    const booking = result.rows[0];
+    if (!booking) {
+      return res.status(404).json({ message: "Agendamento pendente nao encontrado." });
+    }
+
+    return res.json({
+      message: "Pagamento confirmado e agendamento marcado como ocupado.",
+      booking: {
+        id: booking.id,
+        day: booking.day,
+        time: booking.time,
+        status: booking.status,
+        paidAt: booking.paid_at,
+      },
+    });
   })
 );
 
