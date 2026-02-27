@@ -28,7 +28,6 @@ const daySelect = document.getElementById("daySelect");
 const paymentMethodSelect = document.getElementById("paymentMethodSelect");
 const slotGrid = document.getElementById("slotGrid");
 const createPaymentBtn = document.getElementById("createPaymentBtn");
-const confirmPaymentBtn = document.getElementById("confirmPaymentBtn");
 const switchToPixBtn = document.getElementById("switchToPixBtn");
 const upgradePlanBtn = document.getElementById("upgradePlanBtn");
 const planNotifyModal = document.getElementById("planNotifyModal");
@@ -41,14 +40,11 @@ const pixQrImage = document.getElementById("pixQrImage");
 const paymentService = document.getElementById("paymentService");
 const paymentDuration = document.getElementById("paymentDuration");
 const pixKey = document.getElementById("pixKey");
-const pixCode = document.getElementById("pixCode");
 
 let selectedTime = "";
-let currentBookingId = null;
 let currentUser = null;
 let slotsRequestId = 0;
 let isCreatingPayment = false;
-let isConfirmingPayment = false;
 
 function getToken() {
   return localStorage.getItem(TOKEN_KEY);
@@ -244,7 +240,6 @@ async function createPayment() {
     }
 
     hidePlanNotifyModal();
-    currentBookingId = data.bookingId;
     paymentService.textContent = service;
     paymentDuration.textContent = data.durationMinutes ? `${data.durationMinutes} minutos` : "-";
 
@@ -252,7 +247,6 @@ async function createPayment() {
       paymentCard.classList.add("hidden");
       setFeedback(data.message || "Agendamento confirmado usando o plano.", "success");
       setPaymentFeedback("", "");
-      currentBookingId = null;
       selectedTime = "";
       await loadSlots();
       return;
@@ -260,58 +254,15 @@ async function createPayment() {
 
     pixQrImage.src = data.payment.qrImageUrl;
     pixKey.textContent = data.payment.pixKey;
-    pixCode.textContent = data.payment.paymentCode;
     paymentCard.classList.remove("hidden");
     setFeedback(data.message, "success");
-    setPaymentFeedback("Aguardando confirmacao de pagamento.", "");
+    setPaymentFeedback("Pagamento recebido. A confirmacao do agendamento ocorre automaticamente.", "");
     await loadSlots();
   } catch (_error) {
     setFeedback("Erro de conexao com o servidor.", "error");
   } finally {
     isCreatingPayment = false;
     createPaymentBtn.disabled = false;
-  }
-}
-
-async function confirmPayment() {
-  if (isConfirmingPayment) {
-    return;
-  }
-
-  if (!currentBookingId) {
-    setPaymentFeedback("Nao existe pagamento pendente.", "error");
-    return;
-  }
-  isConfirmingPayment = true;
-  confirmPaymentBtn.disabled = true;
-
-  try {
-    const response = await fetch("/api/bookings/confirm-payment", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders(),
-      },
-      body: JSON.stringify({ bookingId: currentBookingId }),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      setPaymentFeedback(data.message || "Nao foi possivel confirmar pagamento.", "error");
-      return;
-    }
-
-    setPaymentFeedback(data.message, "success");
-    setFeedback("Agendamento confirmado com sucesso.", "success");
-    currentBookingId = null;
-    selectedTime = "";
-    await loadSlots();
-  } catch (_error) {
-    setPaymentFeedback("Erro de conexao com o servidor.", "error");
-  } finally {
-    isConfirmingPayment = false;
-    confirmPaymentBtn.disabled = false;
   }
 }
 
@@ -328,7 +279,6 @@ function toggleForLoggedOut() {
   bookingSection.classList.add("hidden");
   paymentCard.classList.add("hidden");
   selectedTime = "";
-  currentBookingId = null;
   hidePlanNotifyModal();
 }
 
@@ -454,10 +404,6 @@ daySelect.addEventListener("change", async () => {
 
 createPaymentBtn.addEventListener("click", () => {
   createPayment();
-});
-
-confirmPaymentBtn.addEventListener("click", () => {
-  confirmPayment();
 });
 
 loadSession().catch(() => {

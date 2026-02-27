@@ -4,21 +4,17 @@ const commonDetails = document.getElementById("commonDetails");
 const plusDetails = document.getElementById("plusDetails");
 const planTypeSelect = document.getElementById("planTypeSelect");
 const createPlanPaymentBtn = document.getElementById("createPlanPaymentBtn");
-const confirmPlanPaymentBtn = document.getElementById("confirmPlanPaymentBtn");
 const backBtn = document.getElementById("backBtn");
 const feedback = document.getElementById("premiumFeedback");
 const planPaymentCard = document.getElementById("planPaymentCard");
 const planPaymentFeedback = document.getElementById("planPaymentFeedback");
 const planPixQrImage = document.getElementById("planPixQrImage");
 const planPixKey = document.getElementById("planPixKey");
-const planPixCode = document.getElementById("planPixCode");
 const planName = document.getElementById("planName");
 const planAmount = document.getElementById("planAmount");
 
-let pendingPurchaseId = null;
 let loadedPlans = null;
 let isCreatingPlanPayment = false;
-let isConfirmingPlanPayment = false;
 
 function getToken() {
   return localStorage.getItem(TOKEN_KEY);
@@ -102,65 +98,18 @@ createPlanPaymentBtn.addEventListener("click", async () => {
       return;
     }
 
-    pendingPurchaseId = data.purchaseId;
     planName.textContent = data.planType === "plus" ? "Plano Plus" : "Plano Comum";
     planAmount.textContent = formatMoney(data.amount);
     planPixQrImage.src = data.payment.qrImageUrl;
     planPixKey.textContent = data.payment.pixKey;
-    planPixCode.textContent = data.payment.paymentCode;
     planPaymentCard.classList.remove("hidden");
     setFeedback(data.message, "success");
-    setPlanPaymentFeedback("Aguardando confirmacao de pagamento.", "");
+    setPlanPaymentFeedback("Pagamento recebido. A ativacao do plano ocorre automaticamente.", "");
   } catch (_error) {
     setFeedback("Erro de conexao com o servidor.", "error");
   } finally {
     isCreatingPlanPayment = false;
     createPlanPaymentBtn.disabled = false;
-  }
-});
-
-confirmPlanPaymentBtn.addEventListener("click", async () => {
-  if (isConfirmingPlanPayment) {
-    return;
-  }
-
-  if (!pendingPurchaseId) {
-    setPlanPaymentFeedback("Nao ha compra pendente para confirmar.", "error");
-    return;
-  }
-  isConfirmingPlanPayment = true;
-  confirmPlanPaymentBtn.disabled = true;
-
-  try {
-    const response = await fetch("/api/plans/confirm-payment", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders(),
-      },
-      body: JSON.stringify({ purchaseId: pendingPurchaseId }),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      setPlanPaymentFeedback(data.message || "Nao foi possivel confirmar o plano.", "error");
-      return;
-    }
-
-    pendingPurchaseId = null;
-    setPlanPaymentFeedback(data.message, "success");
-    if (data.user?.plan?.type === "plus") {
-      currentPlan.textContent = "Plano Plus";
-    } else if (data.user?.plan?.type === "common") {
-      const cut = data.user.plan.preferredCut ? ` (${data.user.plan.preferredCut})` : "";
-      currentPlan.textContent = `Plano Comum${cut}`;
-    }
-  } catch (_error) {
-    setPlanPaymentFeedback("Erro de conexao com o servidor.", "error");
-  } finally {
-    isConfirmingPlanPayment = false;
-    confirmPlanPaymentBtn.disabled = false;
   }
 });
 

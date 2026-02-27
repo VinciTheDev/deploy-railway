@@ -6,7 +6,6 @@ const phoneInput = document.getElementById("phoneInput");
 const daySelect = document.getElementById("daySelect");
 const slotGrid = document.getElementById("slotGrid");
 const createPaymentBtn = document.getElementById("createPaymentBtn");
-const confirmPaymentBtn = document.getElementById("confirmPaymentBtn");
 const serviceDurationInfo = document.getElementById("serviceDurationInfo");
 const feedback = document.getElementById("feedback");
 const paymentFeedback = document.getElementById("paymentFeedback");
@@ -15,13 +14,10 @@ const pixQrImage = document.getElementById("pixQrImage");
 const paymentService = document.getElementById("paymentService");
 const paymentDuration = document.getElementById("paymentDuration");
 const pixKey = document.getElementById("pixKey");
-const pixCode = document.getElementById("pixCode");
 
 let selectedTime = "";
-let currentBookingId = null;
 let slotsRequestId = 0;
 let isCreatingPayment = false;
-let isConfirmingPayment = false;
 const SERVICE_DURATIONS = {
   corte_social: 30,
   corte_tradicional: 30,
@@ -248,7 +244,6 @@ async function createPayment() {
       return;
     }
 
-    currentBookingId = data.bookingId;
     const fallbackDuration = getServiceDuration(service);
     paymentService.textContent = service;
     paymentDuration.textContent = data.durationMinutes
@@ -258,60 +253,15 @@ async function createPayment() {
         : "-";
     pixQrImage.src = data.payment.qrImageUrl;
     pixKey.textContent = data.payment.pixKey;
-    pixCode.textContent = data.payment.paymentCode;
     paymentCard.classList.remove("hidden");
     setFeedback(data.message, "success");
-    setPaymentFeedback("Aguardando confirmacao de pagamento.", "");
+    setPaymentFeedback("Pagamento recebido. A confirmacao do agendamento ocorre automaticamente.", "");
     await loadSlots();
   } catch (_error) {
     setFeedback("Erro de conexao com o servidor.", "error");
   } finally {
     isCreatingPayment = false;
     createPaymentBtn.disabled = false;
-  }
-}
-
-async function confirmPayment() {
-  if (isConfirmingPayment) {
-    return;
-  }
-
-  if (!currentBookingId) {
-    setPaymentFeedback("Nao existe pagamento pendente.", "error");
-    return;
-  }
-
-  isConfirmingPayment = true;
-  confirmPaymentBtn.disabled = true;
-  setPaymentFeedback("Confirmando pagamento...", "");
-
-  try {
-    const response = await fetch("/api/bookings/confirm-payment", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...authHeaders(),
-      },
-      body: JSON.stringify({ bookingId: currentBookingId }),
-    });
-
-    const data = await response.json();
-
-    if (!response.ok) {
-      setPaymentFeedback(data.message || "Nao foi possivel confirmar pagamento.", "error");
-      return;
-    }
-
-    setPaymentFeedback(data.message, "success");
-    setFeedback("Agendamento confirmado com sucesso.", "success");
-    currentBookingId = null;
-    selectedTime = "";
-    await loadSlots();
-  } catch (_error) {
-    setPaymentFeedback("Erro de conexao com o servidor.", "error");
-  } finally {
-    isConfirmingPayment = false;
-    confirmPaymentBtn.disabled = false;
   }
 }
 
@@ -340,10 +290,6 @@ serviceSelect.addEventListener("change", () => {
 
 createPaymentBtn.addEventListener("click", () => {
   createPayment();
-});
-
-confirmPaymentBtn.addEventListener("click", () => {
-  confirmPayment();
 });
 
 (async () => {
