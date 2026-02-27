@@ -322,6 +322,31 @@ async function initDatabase() {
     DROP INDEX IF EXISTS idx_bookings_active_slot;
   `);
 
+  // Clean legacy duplicates before recreating the unique active-slot index.
+  await query(`
+    WITH ranked AS (
+      SELECT
+        id,
+        ROW_NUMBER() OVER (
+          PARTITION BY day, time
+          ORDER BY
+            CASE WHEN status = 'confirmed' THEN 0 ELSE 1 END,
+            COALESCE(paid_at, created_at) DESC,
+            id DESC
+        ) AS rn
+      FROM bookings
+      WHERE status IN ('pending_payment', 'confirmed')
+    )
+    UPDATE bookings b
+    SET
+      status = 'cancelled',
+      cancelled_at = NOW(),
+      cancelled_by = COALESCE(b.cancelled_by, 'system_dedup')
+    FROM ranked r
+    WHERE b.id = r.id
+      AND r.rn > 1;
+  `);
+
   await query(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_bookings_active_slot
     ON bookings(day, time)
