@@ -10,6 +10,7 @@ const planPaymentCard = document.getElementById("planPaymentCard");
 const planPaymentFeedback = document.getElementById("planPaymentFeedback");
 const planPixQrImage = document.getElementById("planPixQrImage");
 const planPixKey = document.getElementById("planPixKey");
+const copyPlanPixKeyBtn = document.getElementById("copyPlanPixKeyBtn");
 const planName = document.getElementById("planName");
 const planAmount = document.getElementById("planAmount");
 
@@ -34,6 +35,29 @@ function setFeedback(message, type) {
 function setPlanPaymentFeedback(message, type) {
   planPaymentFeedback.textContent = message;
   planPaymentFeedback.className = `feedback ${type}`;
+}
+
+async function copyText(text) {
+  if (!text) {
+    return false;
+  }
+
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return true;
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  const copied = document.execCommand("copy");
+  document.body.removeChild(textarea);
+  return copied;
 }
 
 function formatMoney(value) {
@@ -111,6 +135,16 @@ createPlanPaymentBtn.addEventListener("click", async () => {
     isCreatingPlanPayment = false;
     createPlanPaymentBtn.disabled = false;
   }
+});
+
+copyPlanPixKeyBtn.addEventListener("click", () => {
+  copyText(planPixKey.textContent.trim())
+    .then((ok) => {
+      setPlanPaymentFeedback(ok ? "Chave PIX copiada." : "Nao foi possivel copiar a chave PIX.", ok ? "success" : "error");
+    })
+    .catch(() => {
+      setPlanPaymentFeedback("Nao foi possivel copiar a chave PIX.", "error");
+    });
 });
 
 backBtn.addEventListener("click", () => {
