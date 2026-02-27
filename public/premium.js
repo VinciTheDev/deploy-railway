@@ -16,6 +16,9 @@ const planAmount = document.getElementById("planAmount");
 
 let loadedPlans = null;
 let isCreatingPlanPayment = false;
+let pendingPurchaseId = null;
+let planRefreshTimer = null;
+let planRefreshStopTimer = null;
 
 function getToken() {
   return localStorage.getItem(TOKEN_KEY);
@@ -64,6 +67,69 @@ function formatMoney(value) {
   return `R$ ${Number(value).toFixed(2).replace(".", ",")}`;
 }
 
+function stopPlanAutoRefresh() {
+  if (planRefreshTimer) {
+    clearInterval(planRefreshTimer);
+    planRefreshTimer = null;
+  }
+  if (planRefreshStopTimer) {
+    clearTimeout(planRefreshStopTimer);
+    planRefreshStopTimer = null;
+  }
+}
+
+function updateCurrentPlanLabel(plan) {
+  if (plan?.type === "plus") {
+    currentPlan.textContent = "Plano Plus";
+  } else if (plan?.type === "common") {
+    const cut = plan.preferredCut ? ` (${plan.preferredCut})` : "";
+    currentPlan.textContent = `Plano Comum${cut}`;
+  } else {
+    currentPlan.textContent = "Sem plano";
+  }
+}
+
+async function checkPlanPurchaseStatus() {
+  if (!pendingPurchaseId) {
+    return;
+  }
+
+  const response = await fetch(`/api/plans/purchases/${pendingPurchaseId}/status`, {
+    headers: authHeaders(),
+  });
+  const data = await response.json();
+
+  if (!response.ok) {
+    return;
+  }
+
+  if (data.status === "confirmed") {
+    const plansResponse = await fetch("/api/plans", {
+      headers: authHeaders(),
+    });
+    const plansData = await plansResponse.json();
+    if (plansResponse.ok) {
+      updateCurrentPlanLabel(plansData.userPlan);
+    }
+
+    setPlanPaymentFeedback("Pagamento PIX aprovado. Plano ativado com sucesso.", "success");
+    pendingPurchaseId = null;
+    stopPlanAutoRefresh();
+  }
+}
+
+function startPlanAutoRefresh() {
+  stopPlanAutoRefresh();
+  const tick = () => {
+    checkPlanPurchaseStatus().catch(() => {});
+  };
+  tick();
+  planRefreshTimer = setInterval(tick, 5000);
+  planRefreshStopTimer = setTimeout(() => {
+    stopPlanAutoRefresh();
+  }, 120000);
+}
+
 async function loadPlans() {
   if (!getToken()) {
     window.location.href = "/login.html";
@@ -83,14 +149,7 @@ async function loadPlans() {
 
   loadedPlans = data.plans;
 
-  if (data.userPlan?.type === "plus") {
-    currentPlan.textContent = "Plano Plus";
-  } else if (data.userPlan?.type === "common") {
-    const cut = data.userPlan.preferredCut ? ` (${data.userPlan.preferredCut})` : "";
-    currentPlan.textContent = `Plano Comum${cut}`;
-  } else {
-    currentPlan.textContent = "Sem plano";
-  }
+  updateCurrentPlanLabel(data.userPlan);
 
   commonDetails.textContent = `Inclui ${data.plans.common.monthlyFreeCuts} cortes de cabelo por mes por ${formatMoney(data.plans.common.monthlyPrice)}.`;
   plusDetails.textContent = `Cobertura completa por ${formatMoney(data.plans.plus.monthlyPrice)}/mes.`;
@@ -122,19 +181,15 @@ createPlanPaymentBtn.addEventListener("click", async () => {
       return;
     }
 
+    pendingPurchaseId = data.purchaseId || null;
     planName.textContent = data.planType === "plus" ? "Plano Plus" : "Plano Comum";
     planAmount.textContent = formatMoney(data.amount);
     planPixQrImage.src = data.payment.qrImageUrl;
     planPixKey.textContent = data.payment.pixKey;
     planPaymentCard.classList.remove("hidden");
     setFeedback(data.message, "success");
-    setPlanPaymentFeedback("Pagamento recebido. A ativacao do plano ocorre automaticamente.", "");
-    if (data.user?.plan?.type === "plus") {
-      currentPlan.textContent = "Plano Plus";
-    } else if (data.user?.plan?.type === "common") {
-      const cut = data.user.plan.preferredCut ? ` (${data.user.plan.preferredCut})` : "";
-      currentPlan.textContent = `Plano Comum${cut}`;
-    }
+    setPlanPaymentFeedback("Pagamento em analise. O plano ativa automaticamente apos confirmacao.", "");
+    startPlanAutoRefresh();
   } catch (_error) {
     setFeedback("Erro de conexao com o servidor.", "error");
   } finally {
@@ -154,6 +209,7 @@ copyPlanPixKeyBtn.addEventListener("click", () => {
 });
 
 backBtn.addEventListener("click", () => {
+  stopPlanAutoRefresh();
   window.location.href = "/";
 });
 

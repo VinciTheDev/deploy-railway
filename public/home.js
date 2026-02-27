@@ -21,6 +21,7 @@ let slotsRequestId = 0;
 let isCreatingPayment = false;
 let slotRefreshTimer = null;
 let slotRefreshStopTimer = null;
+let currentBookingId = null;
 const SERVICE_DURATIONS = {
   corte_social: 30,
   corte_tradicional: 30,
@@ -67,12 +68,37 @@ function stopAutoRefreshSlots() {
 
 function startAutoRefreshSlots() {
   stopAutoRefreshSlots();
-  slotRefreshTimer = setInterval(() => {
-    loadSlots().catch(() => {});
-  }, 5000);
+  const tick = () => {
+    Promise.all([
+      loadSlots(),
+      checkCurrentBookingStatus(),
+    ]).catch(() => {});
+  };
+  tick();
+  slotRefreshTimer = setInterval(tick, 5000);
   slotRefreshStopTimer = setTimeout(() => {
     stopAutoRefreshSlots();
   }, 120000);
+}
+
+async function checkCurrentBookingStatus() {
+  if (!currentBookingId) {
+    return;
+  }
+
+  const response = await fetch(`/api/bookings/${currentBookingId}/status`, {
+    headers: authHeaders(),
+  });
+  const data = await response.json();
+
+  if (!response.ok) {
+    return;
+  }
+
+  if (data.status === "confirmed") {
+    setPaymentFeedback("Pagamento PIX aprovado. Horario marcado como ocupado.", "success");
+    stopAutoRefreshSlots();
+  }
 }
 
 async function copyText(text) {
@@ -293,6 +319,7 @@ async function createPayment() {
       return;
     }
 
+    currentBookingId = data.bookingId || null;
     const fallbackDuration = getServiceDuration(service);
     paymentService.textContent = service;
     paymentDuration.textContent = data.durationMinutes
@@ -326,6 +353,7 @@ logoutButton.addEventListener("click", async () => {
   }
 
   localStorage.removeItem(TOKEN_KEY);
+  currentBookingId = null;
   stopAutoRefreshSlots();
   window.location.href = "/";
 });

@@ -67,6 +67,7 @@ const PIX_KEY = process.env.PIX_KEY || "74cf1734-d27d-4d2f-ad2d-4365f5ce7973";
 const PIX_QR_IMAGE_URL = process.env.PIX_QR_IMAGE_URL || "/images/qrcode-pix.png";
 const APP_TIMEZONE = process.env.APP_TIMEZONE || "America/Fortaleza";
 const PIX_AUTO_CONFIRM_SECONDS = Number.parseInt(process.env.PIX_AUTO_CONFIRM_SECONDS || "30", 10);
+const PLAN_AUTO_CONFIRM_SECONDS = Number.parseInt(process.env.PLAN_AUTO_CONFIRM_SECONDS || "30", 10);
 
 const sessions = new Map();
 
@@ -239,6 +240,39 @@ async function processDuePixConfirmations() {
     `,
     [waitSeconds]
   );
+}
+
+async function processDuePlanConfirmations() {
+  const waitSeconds = Number.isInteger(PLAN_AUTO_CONFIRM_SECONDS) && PLAN_AUTO_CONFIRM_SECONDS >= 0
+    ? PLAN_AUTO_CONFIRM_SECONDS
+    : 30;
+
+  const monthKey = getCurrentMonthKey();
+
+  const result = await query(
+    `
+      WITH due AS (
+        UPDATE plan_purchases
+        SET status = 'confirmed',
+            paid_at = COALESCE(paid_at, NOW())
+        WHERE status = 'pending_payment'
+          AND created_at <= NOW() - make_interval(secs => $1::int)
+        RETURNING user_id, plan_type
+      )
+      UPDATE users u
+      SET plan_type = due.plan_type,
+          preferred_cut = '',
+          plan_month_key = $2,
+          common_cuts_used = 0,
+          updated_at = NOW()
+      FROM due
+      WHERE u.id = due.user_id
+      RETURNING u.id;
+    `,
+    [waitSeconds, monthKey]
+  );
+
+  return result.rowCount || 0;
 }
 
 async function getUserById(id) {
@@ -669,7 +703,7 @@ app.put(
   })
 );
 
-app.get("/api/plans", authMiddleware, (req, res) => {
+app.get("/api/plans", authMiddleware, asyncHandler(async (req, res) => {
   const plans = {
     common: {
       name: "Plano Comum",
@@ -684,11 +718,14 @@ app.get("/api/plans", authMiddleware, (req, res) => {
     },
   };
 
+  await processDuePlanConfirmations();
+  const freshUser = await getUserById(req.user.id);
+
   return res.json({
     plans,
-    userPlan: req.user.plan,
+    userPlan: buildUserPayload(freshUser).plan,
   });
-});
+}));
 
 app.post(
   "/api/plans/create-payment",
@@ -705,54 +742,24 @@ app.post(
 
     const amount = normalizedPlanType === "plus" ? PLUS_MONTHLY_PRICE : COMMON_MONTHLY_PRICE;
     const payment = buildPixPayment("PLAN", `Plano ${normalizedPlanType.toUpperCase()} Evilazio`);
-    const client = await pool.connect();
-    let purchaseId;
-    let user;
 
-    try {
-      await client.query("BEGIN");
-
-      const insert = await client.query(
-        `
-          INSERT INTO plan_purchases (
-            user_id, plan_type, preferred_cut, amount, status, pix_key, payment_code, qr_text, paid_at
-          )
-          VALUES ($1, $2, '', $3, 'confirmed', $4, $5, $6, NOW())
-          RETURNING id;
-        `,
-        [req.user.id, normalizedPlanType, amount, payment.pixKey, payment.paymentCode, payment.qrText]
-      );
-      purchaseId = insert.rows[0].id;
-
-      await client.query(
-        `
-          UPDATE users
-          SET plan_type = $1,
-              preferred_cut = '',
-              plan_month_key = $2,
-              common_cuts_used = 0,
-              updated_at = NOW()
-          WHERE id = $3;
-        `,
-        [normalizedPlanType, getCurrentMonthKey(), req.user.id]
-      );
-
-      const userResult = await client.query("SELECT * FROM users WHERE id = $1", [req.user.id]);
-      user = userResult.rows[0];
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
+    const insert = await query(
+      `
+        INSERT INTO plan_purchases (
+          user_id, plan_type, preferred_cut, amount, status, pix_key, payment_code, qr_text
+        )
+        VALUES ($1, $2, '', $3, 'pending_payment', $4, $5, $6)
+        RETURNING id;
+      `,
+      [req.user.id, normalizedPlanType, amount, payment.pixKey, payment.paymentCode, payment.qrText]
+    );
+    const purchaseId = insert.rows[0].id;
 
     return res.status(201).json({
-      message: `Plano ${normalizedPlanType === "plus" ? "Plus" : "Comum"} ativado com sucesso.`,
+      message: "Pagamento PIX do plano gerado.",
       purchaseId,
       planType: normalizedPlanType,
       amount,
-      user: buildUserPayload(user),
       payment: {
         pixKey: payment.pixKey,
         paymentCode: payment.paymentCode,
@@ -838,10 +845,46 @@ app.post(
 );
 
 app.get(
+  "/api/plans/purchases/:purchaseId/status",
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    await processDuePlanConfirmations();
+    const purchaseId = Number.parseInt(req.params.purchaseId, 10);
+    if (!Number.isInteger(purchaseId)) {
+      return res.status(400).json({ message: "Compra invalida." });
+    }
+
+    const result = await query(
+      `
+        SELECT id, status, plan_type, paid_at
+        FROM plan_purchases
+        WHERE id = $1
+          AND user_id = $2
+        LIMIT 1;
+      `,
+      [purchaseId, req.user.id]
+    );
+
+    const purchase = result.rows[0];
+    if (!purchase) {
+      return res.status(404).json({ message: "Compra nao encontrada." });
+    }
+
+    return res.json({
+      purchaseId: purchase.id,
+      status: purchase.status,
+      planType: purchase.plan_type,
+      paidAt: purchase.paid_at,
+    });
+  })
+);
+
+app.get(
   "/api/schedule/day",
   authMiddleware,
   asyncHandler(async (req, res) => {
     await processDuePixConfirmations();
+    await processDuePlanConfirmations();
     const normalizedDay = normalizeDay(req.query.day);
 
     if (!isValidDayInCurrentMonth(normalizedDay)) {
@@ -857,6 +900,7 @@ app.post(
   "/api/bookings/create-payment",
   authMiddleware,
   asyncHandler(async (req, res) => {
+    await processDuePlanConfirmations();
     if (req.user.role === "admin") {
       return res.status(403).json({ message: "Admin nao realiza agendamento." });
     }
@@ -1072,10 +1116,50 @@ app.post(
 );
 
 app.get(
+  "/api/bookings/:bookingId/status",
+  authMiddleware,
+  asyncHandler(async (req, res) => {
+    await processDuePixConfirmations();
+    const bookingId = Number.parseInt(req.params.bookingId, 10);
+    if (!Number.isInteger(bookingId)) {
+      return res.status(400).json({ message: "Agendamento invalido." });
+    }
+
+    const result = await query(
+      `
+        SELECT id, user_id, status, day, time, paid_at
+        FROM bookings
+        WHERE id = $1
+        LIMIT 1;
+      `,
+      [bookingId]
+    );
+
+    const booking = result.rows[0];
+    if (!booking) {
+      return res.status(404).json({ message: "Agendamento nao encontrado." });
+    }
+
+    if (req.user.role !== "admin" && booking.user_id !== req.user.id) {
+      return res.status(403).json({ message: "Acesso negado." });
+    }
+
+    return res.json({
+      bookingId: booking.id,
+      status: booking.status,
+      day: booking.day,
+      time: booking.time,
+      paidAt: booking.paid_at,
+    });
+  })
+);
+
+app.get(
   "/api/bookings",
   authMiddleware,
   asyncHandler(async (req, res) => {
     await processDuePixConfirmations();
+    await processDuePlanConfirmations();
     const result = await query(
       req.user.role === "admin"
         ? "SELECT * FROM bookings ORDER BY created_at DESC"

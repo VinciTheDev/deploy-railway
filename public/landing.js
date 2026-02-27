@@ -49,6 +49,7 @@ let slotsRequestId = 0;
 let isCreatingPayment = false;
 let slotRefreshTimer = null;
 let slotRefreshStopTimer = null;
+let currentBookingId = null;
 
 function getToken() {
   return localStorage.getItem(TOKEN_KEY);
@@ -120,12 +121,37 @@ function stopAutoRefreshSlots() {
 
 function startAutoRefreshSlots() {
   stopAutoRefreshSlots();
-  slotRefreshTimer = setInterval(() => {
-    loadSlots().catch(() => {});
-  }, 5000);
+  const tick = () => {
+    Promise.all([
+      loadSlots(),
+      checkCurrentBookingStatus(),
+    ]).catch(() => {});
+  };
+  tick();
+  slotRefreshTimer = setInterval(tick, 5000);
   slotRefreshStopTimer = setTimeout(() => {
     stopAutoRefreshSlots();
   }, 120000);
+}
+
+async function checkCurrentBookingStatus() {
+  if (!currentBookingId) {
+    return;
+  }
+
+  const response = await fetch(`/api/bookings/${currentBookingId}/status`, {
+    headers: authHeaders(),
+  });
+  const data = await response.json();
+
+  if (!response.ok) {
+    return;
+  }
+
+  if (data.status === "confirmed") {
+    setPaymentFeedback("Pagamento PIX aprovado. Horario marcado como ocupado.", "success");
+    stopAutoRefreshSlots();
+  }
 }
 
 async function copyText(text) {
@@ -289,6 +315,7 @@ async function createPayment() {
     }
 
     hidePlanNotifyModal();
+    currentBookingId = data.bookingId || null;
     paymentService.textContent = service;
     paymentDuration.textContent = data.durationMinutes ? `${data.durationMinutes} minutos` : "-";
 
@@ -296,6 +323,7 @@ async function createPayment() {
       paymentCard.classList.add("hidden");
       setFeedback(data.message || "Agendamento confirmado usando o plano.", "success");
       setPaymentFeedback("", "");
+      currentBookingId = null;
       selectedTime = "";
       await loadSlots();
       return;
@@ -329,6 +357,7 @@ function toggleForLoggedOut() {
   bookingSection.classList.add("hidden");
   paymentCard.classList.add("hidden");
   selectedTime = "";
+  currentBookingId = null;
   stopAutoRefreshSlots();
   hidePlanNotifyModal();
 }
@@ -432,6 +461,7 @@ btnLogout.addEventListener("click", async () => {
 
   localStorage.removeItem(TOKEN_KEY);
   currentUser = null;
+  currentBookingId = null;
   stopAutoRefreshSlots();
   hidePlanNotifyModal();
   toggleForLoggedOut();
