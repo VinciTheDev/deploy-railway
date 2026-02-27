@@ -22,6 +22,7 @@ let isCreatingPayment = false;
 let slotRefreshTimer = null;
 let slotRefreshStopTimer = null;
 let currentBookingId = null;
+let currentBookingExpiresAt = null;
 const SERVICE_DURATIONS = {
   corte_social: 30,
   corte_tradicional: 30,
@@ -66,6 +67,15 @@ function stopAutoRefreshSlots() {
   }
 }
 
+function getRefreshStopMs(expiresAt) {
+  const parsed = expiresAt ? new Date(expiresAt).getTime() : Number.NaN;
+  if (!Number.isFinite(parsed)) {
+    return 120000;
+  }
+  const remaining = parsed - Date.now();
+  return Math.max(5000, Math.min(remaining + 15000, 30 * 60 * 1000));
+}
+
 function startAutoRefreshSlots() {
   stopAutoRefreshSlots();
   const tick = () => {
@@ -78,7 +88,7 @@ function startAutoRefreshSlots() {
   slotRefreshTimer = setInterval(tick, 5000);
   slotRefreshStopTimer = setTimeout(() => {
     stopAutoRefreshSlots();
-  }, 120000);
+  }, getRefreshStopMs(currentBookingExpiresAt));
 }
 
 async function checkCurrentBookingStatus() {
@@ -97,6 +107,25 @@ async function checkCurrentBookingStatus() {
 
   if (data.status === "confirmed") {
     setPaymentFeedback("Pagamento PIX aprovado. Horario marcado como ocupado.", "success");
+    currentBookingId = null;
+    currentBookingExpiresAt = null;
+    stopAutoRefreshSlots();
+    return;
+  }
+
+  if (data.status === "expired") {
+    setPaymentFeedback("Pagamento expirado. Gere um novo PIX para reservar este horario.", "error");
+    currentBookingId = null;
+    currentBookingExpiresAt = null;
+    stopAutoRefreshSlots();
+    loadSlots().catch(() => {});
+    return;
+  }
+
+  if (data.status === "cancelled") {
+    setPaymentFeedback("Reserva cancelada. Escolha outro horario para seguir.", "error");
+    currentBookingId = null;
+    currentBookingExpiresAt = null;
     stopAutoRefreshSlots();
   }
 }
@@ -320,6 +349,7 @@ async function createPayment() {
     }
 
     currentBookingId = data.bookingId || null;
+    currentBookingExpiresAt = data.payment?.expiresAt || null;
     const fallbackDuration = getServiceDuration(service);
     paymentService.textContent = service;
     paymentDuration.textContent = data.durationMinutes
@@ -331,7 +361,7 @@ async function createPayment() {
     pixKey.textContent = data.payment.pixKey;
     paymentCard.classList.remove("hidden");
     setFeedback(data.message, "success");
-    setPaymentFeedback("Pagamento em analise. O horario muda para ocupado automaticamente apos confirmacao.", "");
+    setPaymentFeedback("Pagamento em analise. O horario sera confirmado automaticamente apos compensacao PIX.", "");
     startAutoRefreshSlots();
     await loadSlots();
   } catch (_error) {
@@ -354,6 +384,7 @@ logoutButton.addEventListener("click", async () => {
 
   localStorage.removeItem(TOKEN_KEY);
   currentBookingId = null;
+  currentBookingExpiresAt = null;
   stopAutoRefreshSlots();
   window.location.href = "/";
 });

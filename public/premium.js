@@ -17,6 +17,7 @@ const planAmount = document.getElementById("planAmount");
 let loadedPlans = null;
 let isCreatingPlanPayment = false;
 let pendingPurchaseId = null;
+let pendingPurchaseExpiresAt = null;
 let planRefreshTimer = null;
 let planRefreshStopTimer = null;
 
@@ -78,6 +79,15 @@ function stopPlanAutoRefresh() {
   }
 }
 
+function getPlanRefreshStopMs(expiresAt) {
+  const parsed = expiresAt ? new Date(expiresAt).getTime() : Number.NaN;
+  if (!Number.isFinite(parsed)) {
+    return 120000;
+  }
+  const remaining = parsed - Date.now();
+  return Math.max(5000, Math.min(remaining + 15000, 30 * 60 * 1000));
+}
+
 function updateCurrentPlanLabel(plan) {
   if (plan?.type === "plus") {
     currentPlan.textContent = "Plano Plus";
@@ -114,6 +124,15 @@ async function checkPlanPurchaseStatus() {
 
     setPlanPaymentFeedback("Pagamento PIX aprovado. Plano ativado com sucesso.", "success");
     pendingPurchaseId = null;
+    pendingPurchaseExpiresAt = null;
+    stopPlanAutoRefresh();
+    return;
+  }
+
+  if (data.status === "expired") {
+    setPlanPaymentFeedback("Pagamento expirado. Gere um novo PIX para ativar o plano.", "error");
+    pendingPurchaseId = null;
+    pendingPurchaseExpiresAt = null;
     stopPlanAutoRefresh();
   }
 }
@@ -127,7 +146,7 @@ function startPlanAutoRefresh() {
   planRefreshTimer = setInterval(tick, 5000);
   planRefreshStopTimer = setTimeout(() => {
     stopPlanAutoRefresh();
-  }, 120000);
+  }, getPlanRefreshStopMs(pendingPurchaseExpiresAt));
 }
 
 async function loadPlans() {
@@ -182,13 +201,14 @@ createPlanPaymentBtn.addEventListener("click", async () => {
     }
 
     pendingPurchaseId = data.purchaseId || null;
+    pendingPurchaseExpiresAt = data.payment?.expiresAt || null;
     planName.textContent = data.planType === "plus" ? "Plano Plus" : "Plano Comum";
     planAmount.textContent = formatMoney(data.amount);
     planPixQrImage.src = data.payment.qrImageUrl;
     planPixKey.textContent = data.payment.pixKey;
     planPaymentCard.classList.remove("hidden");
     setFeedback(data.message, "success");
-    setPlanPaymentFeedback("Pagamento em analise. O plano ativa automaticamente apos confirmacao.", "");
+    setPlanPaymentFeedback("Pagamento em analise. O plano ativa automaticamente apos compensacao PIX.", "");
     startPlanAutoRefresh();
   } catch (_error) {
     setFeedback("Erro de conexao com o servidor.", "error");

@@ -100,20 +100,6 @@ function renderRows(slots) {
 
     const actions = document.createElement("td");
     if (slot.booking && ["pending_payment", "confirmed"].includes(slot.status)) {
-      if (slot.status === "pending_payment") {
-        const confirmBtn = document.createElement("button");
-        confirmBtn.type = "button";
-        confirmBtn.className = "outline-btn";
-        confirmBtn.textContent = cancellingBookings.has(slot.booking.id) ? "Aguarde..." : "Confirmar pagamento";
-        confirmBtn.disabled = cancellingBookings.has(slot.booking.id);
-        confirmBtn.addEventListener("click", () => {
-          confirmBookingPayment(slot.booking.id).catch(() => {
-            setFeedback("Erro de conexao com o servidor.", "error");
-          });
-        });
-        actions.appendChild(confirmBtn);
-      }
-
       const cancelBtn = document.createElement("button");
       cancelBtn.type = "button";
       cancelBtn.className = "outline-btn";
@@ -166,33 +152,6 @@ async function cancelBooking(bookingId) {
   cancellingBookings.delete(bookingId);
   await loadSchedule();
   setFeedback(data.message || "Agendamento cancelado.", "success");
-}
-
-async function confirmBookingPayment(bookingId) {
-  if (!Number.isInteger(bookingId) || cancellingBookings.has(bookingId)) {
-    return;
-  }
-
-  cancellingBookings.add(bookingId);
-  await loadSchedule();
-
-  const response = await fetch(`/api/admin/bookings/${bookingId}/confirm-payment`, {
-    method: "POST",
-    headers: authHeaders(),
-  });
-
-  const data = await response.json();
-
-  if (!response.ok) {
-    cancellingBookings.delete(bookingId);
-    await loadSchedule();
-    setFeedback(data.message || "Nao foi possivel confirmar pagamento.", "error");
-    return;
-  }
-
-  cancellingBookings.delete(bookingId);
-  await loadSchedule();
-  setFeedback(data.message || "Pagamento confirmado.", "success");
 }
 
 async function loadSchedule() {

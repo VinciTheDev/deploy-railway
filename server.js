@@ -63,11 +63,11 @@ const CUT_SERVICE_KEYS = new Set([
 const COMMON_MONTHLY_FREE_CUTS = 2;
 const COMMON_MONTHLY_PRICE = 39.9;
 const PLUS_MONTHLY_PRICE = 79.9;
+const PAYMENT_EXPIRATION_MINUTES = Number.parseInt(process.env.PAYMENT_EXPIRATION_MINUTES || "20", 10);
 const PIX_KEY = process.env.PIX_KEY || "74cf1734-d27d-4d2f-ad2d-4365f5ce7973";
 const PIX_QR_IMAGE_URL = process.env.PIX_QR_IMAGE_URL || "/images/qrcode-pix.png";
 const APP_TIMEZONE = process.env.APP_TIMEZONE || "America/Fortaleza";
-const PIX_AUTO_CONFIRM_SECONDS = Number.parseInt(process.env.PIX_AUTO_CONFIRM_SECONDS || "30", 10);
-const PLAN_AUTO_CONFIRM_SECONDS = Number.parseInt(process.env.PLAN_AUTO_CONFIRM_SECONDS || "30", 10);
+const PAYMENT_WEBHOOK_TOKEN = process.env.PAYMENT_WEBHOOK_TOKEN || "";
 
 const sessions = new Map();
 
@@ -211,6 +211,7 @@ function parseBookingRow(row) {
       paymentCode: row.payment_code,
       qrText: row.payment_qr_text,
       planType: row.payment_plan_type,
+      expiresAt: row.expires_at,
       createdAt: row.created_at,
     },
     createdAt: row.created_at,
@@ -220,59 +221,27 @@ function parseBookingRow(row) {
   };
 }
 
+function getPaymentExpirationMinutes() {
+  if (!Number.isFinite(PAYMENT_EXPIRATION_MINUTES) || PAYMENT_EXPIRATION_MINUTES <= 0) {
+    return 20;
+  }
+  return PAYMENT_EXPIRATION_MINUTES;
+}
+
+function buildPaymentExpiryDate() {
+  return new Date(Date.now() + getPaymentExpirationMinutes() * 60 * 1000);
+}
+
+function normalizeWebhookStatus(status) {
+  const normalized = String(status || "").toLowerCase().trim();
+  if (["paid", "confirmed", "approved", "succeeded"].includes(normalized)) {
+    return "paid";
+  }
+  return normalized;
+}
+
 async function query(text, params = []) {
   return pool.query(text, params);
-}
-
-async function processDuePixConfirmations() {
-  const waitSeconds = Number.isInteger(PIX_AUTO_CONFIRM_SECONDS) && PIX_AUTO_CONFIRM_SECONDS >= 0
-    ? PIX_AUTO_CONFIRM_SECONDS
-    : 30;
-
-  await query(
-    `
-      UPDATE bookings
-      SET status = 'confirmed',
-          paid_at = COALESCE(paid_at, NOW())
-      WHERE status = 'pending_payment'
-        AND payment_method = 'pix'
-        AND created_at <= NOW() - make_interval(secs => $1::int);
-    `,
-    [waitSeconds]
-  );
-}
-
-async function processDuePlanConfirmations() {
-  const waitSeconds = Number.isInteger(PLAN_AUTO_CONFIRM_SECONDS) && PLAN_AUTO_CONFIRM_SECONDS >= 0
-    ? PLAN_AUTO_CONFIRM_SECONDS
-    : 30;
-
-  const monthKey = getCurrentMonthKey();
-
-  const result = await query(
-    `
-      WITH due AS (
-        UPDATE plan_purchases
-        SET status = 'confirmed',
-            paid_at = COALESCE(paid_at, NOW())
-        WHERE status = 'pending_payment'
-          AND created_at <= NOW() - make_interval(secs => $1::int)
-        RETURNING user_id, plan_type
-      )
-      UPDATE users u
-      SET plan_type = due.plan_type,
-          preferred_cut = '',
-          plan_month_key = $2,
-          common_cuts_used = 0,
-          updated_at = NOW()
-      FROM due
-      WHERE u.id = due.user_id
-      RETURNING u.id;
-    `,
-    [waitSeconds, monthKey]
-  );
-
-  return result.rowCount || 0;
 }
 
 async function getUserById(id) {
@@ -349,6 +318,7 @@ async function initDatabase() {
       payment_qr_text TEXT,
       payment_plan_type TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ,
       paid_at TIMESTAMPTZ,
       cancelled_at TIMESTAMPTZ,
       cancelled_by TEXT
@@ -367,9 +337,35 @@ async function initDatabase() {
       payment_code TEXT,
       qr_text TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      expires_at TIMESTAMPTZ,
       paid_at TIMESTAMPTZ
     );
   `);
+
+  await query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;");
+  await query("ALTER TABLE plan_purchases ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;");
+
+  await query(
+    `
+      UPDATE bookings
+      SET expires_at = created_at + ($1::text || ' minutes')::interval
+      WHERE status = 'pending_payment'
+        AND expires_at IS NULL;
+    `,
+    [getPaymentExpirationMinutes()]
+  );
+
+  await query(
+    `
+      UPDATE plan_purchases
+      SET expires_at = created_at + ($1::text || ' minutes')::interval
+      WHERE status = 'pending_payment'
+        AND expires_at IS NULL;
+    `,
+    [getPaymentExpirationMinutes()]
+  );
+
+  await expirePendingPayments();
 
   await query(`
     DROP INDEX IF EXISTS idx_bookings_active_slot;
@@ -514,7 +510,32 @@ function asyncHandler(handler) {
   };
 }
 
+async function expirePendingPayments(db = pool) {
+  await db.query(
+    `
+      UPDATE bookings
+      SET status = 'expired',
+          cancelled_at = NOW(),
+          cancelled_by = 'system_timeout'
+      WHERE status = 'pending_payment'
+        AND expires_at IS NOT NULL
+        AND expires_at <= NOW();
+    `
+  );
+
+  await db.query(
+    `
+      UPDATE plan_purchases
+      SET status = 'expired'
+      WHERE status = 'pending_payment'
+        AND expires_at IS NOT NULL
+        AND expires_at <= NOW();
+    `
+  );
+}
+
 async function getBookingStatusForSlot(day, time) {
+  await expirePendingPayments();
   const result = await query(
     `
       SELECT *
@@ -530,6 +551,7 @@ async function getBookingStatusForSlot(day, time) {
 }
 
 async function buildDaySchedule(day) {
+  await expirePendingPayments();
   const result = await query(
     `
       SELECT *
@@ -718,7 +740,6 @@ app.get("/api/plans", authMiddleware, asyncHandler(async (req, res) => {
     },
   };
 
-  await processDuePlanConfirmations();
   const freshUser = await getUserById(req.user.id);
 
   return res.json({
@@ -742,16 +763,17 @@ app.post(
 
     const amount = normalizedPlanType === "plus" ? PLUS_MONTHLY_PRICE : COMMON_MONTHLY_PRICE;
     const payment = buildPixPayment("PLAN", `Plano ${normalizedPlanType.toUpperCase()} Evilazio`);
+    const expiresAt = buildPaymentExpiryDate();
 
     const insert = await query(
       `
         INSERT INTO plan_purchases (
-          user_id, plan_type, preferred_cut, amount, status, pix_key, payment_code, qr_text
+          user_id, plan_type, preferred_cut, amount, status, pix_key, payment_code, qr_text, expires_at
         )
-        VALUES ($1, $2, '', $3, 'pending_payment', $4, $5, $6)
+        VALUES ($1, $2, '', $3, 'pending_payment', $4, $5, $6, $7)
         RETURNING id;
       `,
-      [req.user.id, normalizedPlanType, amount, payment.pixKey, payment.paymentCode, payment.qrText]
+      [req.user.id, normalizedPlanType, amount, payment.pixKey, payment.paymentCode, payment.qrText, expiresAt]
     );
     const purchaseId = insert.rows[0].id;
 
@@ -765,6 +787,7 @@ app.post(
         paymentCode: payment.paymentCode,
         qrText: payment.qrText,
         qrImageUrl: payment.qrImageUrl,
+        expiresAt,
       },
     });
   })
@@ -774,73 +797,9 @@ app.post(
   "/api/plans/confirm-payment",
   authMiddleware,
   asyncHandler(async (req, res) => {
-    if (req.user.role === "admin") {
-      return res.status(400).json({ message: "Admin nao precisa de plano." });
-    }
-
-    const purchaseId = Number.parseInt(req.body.purchaseId, 10);
-    if (!Number.isInteger(purchaseId)) {
-      return res.status(400).json({ message: "Compra invalida." });
-    }
-
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-
-      const purchaseResult = await client.query(
-        `
-          SELECT *
-          FROM plan_purchases
-          WHERE id = $1
-            AND user_id = $2
-            AND status = 'pending_payment'
-          FOR UPDATE;
-        `,
-        [purchaseId, req.user.id]
-      );
-
-      const purchase = purchaseResult.rows[0];
-      if (!purchase) {
-        await client.query("ROLLBACK");
-        return res.status(404).json({ message: "Compra pendente nao encontrada." });
-      }
-
-      await client.query(
-        `
-          UPDATE plan_purchases
-          SET status = 'confirmed',
-              paid_at = NOW()
-          WHERE id = $1;
-        `,
-        [purchaseId]
-      );
-
-      await client.query(
-        `
-          UPDATE users
-          SET plan_type = $1,
-              preferred_cut = '',
-              plan_month_key = $2,
-              common_cuts_used = 0,
-              updated_at = NOW()
-          WHERE id = $3;
-        `,
-        [purchase.plan_type, getCurrentMonthKey(), req.user.id]
-      );
-
-      const userResult = await client.query("SELECT * FROM users WHERE id = $1", [req.user.id]);
-      await client.query("COMMIT");
-
-      return res.json({
-        message: `Plano ${purchase.plan_type === "plus" ? "Plus" : "Comum"} ativado com sucesso.`,
-        user: buildUserPayload(userResult.rows[0]),
-      });
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
+    return res.status(410).json({
+      message: "Confirmacao manual desativada. O plano ativa automaticamente quando o PIX for compensado.",
+    });
   })
 );
 
@@ -848,7 +807,7 @@ app.get(
   "/api/plans/purchases/:purchaseId/status",
   authMiddleware,
   asyncHandler(async (req, res) => {
-    await processDuePlanConfirmations();
+    await expirePendingPayments();
     const purchaseId = Number.parseInt(req.params.purchaseId, 10);
     if (!Number.isInteger(purchaseId)) {
       return res.status(400).json({ message: "Compra invalida." });
@@ -856,7 +815,7 @@ app.get(
 
     const result = await query(
       `
-        SELECT id, status, plan_type, paid_at
+        SELECT id, status, plan_type, paid_at, expires_at
         FROM plan_purchases
         WHERE id = $1
           AND user_id = $2
@@ -875,6 +834,7 @@ app.get(
       status: purchase.status,
       planType: purchase.plan_type,
       paidAt: purchase.paid_at,
+      expiresAt: purchase.expires_at,
     });
   })
 );
@@ -883,8 +843,6 @@ app.get(
   "/api/schedule/day",
   authMiddleware,
   asyncHandler(async (req, res) => {
-    await processDuePixConfirmations();
-    await processDuePlanConfirmations();
     const normalizedDay = normalizeDay(req.query.day);
 
     if (!isValidDayInCurrentMonth(normalizedDay)) {
@@ -900,7 +858,6 @@ app.post(
   "/api/bookings/create-payment",
   authMiddleware,
   asyncHandler(async (req, res) => {
-    await processDuePlanConfirmations();
     if (req.user.role === "admin") {
       return res.status(403).json({ message: "Admin nao realiza agendamento." });
     }
@@ -926,6 +883,7 @@ app.post(
     }
 
     const normalizedPaymentMethod = String(paymentMethod || "pix").toLowerCase();
+    await expirePendingPayments();
     const client = await pool.connect();
 
     try {
@@ -1016,14 +974,15 @@ app.post(
       }
 
       const payment = buildPixPayment("EVLZ", "Evilazio Barbershop");
+      const expiresAt = buildPaymentExpiryDate();
 
       const insertPixBooking = await client.query(
         `
           INSERT INTO bookings (
             user_id, username, display_name, phone, service, duration_minutes,
-            day, time, status, payment_method, payment_pix_key, payment_code, payment_qr_text
+            day, time, status, payment_method, payment_pix_key, payment_code, payment_qr_text, expires_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending_payment', 'pix', $9, $10, $11)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending_payment', 'pix', $9, $10, $11, $12)
           RETURNING *;
         `,
         [
@@ -1038,6 +997,7 @@ app.post(
           payment.pixKey,
           payment.paymentCode,
           payment.qrText,
+          expiresAt,
         ]
       );
 
@@ -1053,6 +1013,7 @@ app.post(
           paymentCode: payment.paymentCode,
           qrText: payment.qrText,
           qrImageUrl: payment.qrImageUrl,
+          expiresAt,
         },
       });
     } catch (error) {
@@ -1071,46 +1032,8 @@ app.post(
   "/api/bookings/confirm-payment",
   authMiddleware,
   asyncHandler(async (req, res) => {
-    if (req.user.role === "admin") {
-      return res.status(403).json({ message: "Admin nao realiza agendamento." });
-    }
-
-    const bookingId = Number.parseInt(req.body.bookingId, 10);
-    if (!Number.isInteger(bookingId)) {
-      return res.status(400).json({ message: "Booking invalido." });
-    }
-
-    let result;
-    try {
-      result = await query(
-        `
-          UPDATE bookings
-          SET status = 'confirmed',
-              paid_at = NOW()
-          WHERE id = $1
-            AND user_id = $2
-            AND status = 'pending_payment'
-          RETURNING *;
-        `,
-        [bookingId, req.user.id]
-      );
-    } catch (error) {
-      if (error.code === "23505") {
-        return res.status(409).json({
-          message: "Horario ja foi ocupado por outro pagamento confirmado. Escolha outro horario.",
-        });
-      }
-      throw error;
-    }
-
-    const booking = result.rows[0];
-    if (!booking) {
-      return res.status(404).json({ message: "Reserva pendente nao encontrada." });
-    }
-
-    return res.json({
-      message: "Pagamento confirmado. Agendamento finalizado.",
-      booking: parseBookingRow(booking),
+    return res.status(410).json({
+      message: "Confirmacao manual desativada. O agendamento confirma automaticamente apos compensacao PIX.",
     });
   })
 );
@@ -1119,7 +1042,7 @@ app.get(
   "/api/bookings/:bookingId/status",
   authMiddleware,
   asyncHandler(async (req, res) => {
-    await processDuePixConfirmations();
+    await expirePendingPayments();
     const bookingId = Number.parseInt(req.params.bookingId, 10);
     if (!Number.isInteger(bookingId)) {
       return res.status(400).json({ message: "Agendamento invalido." });
@@ -1127,7 +1050,7 @@ app.get(
 
     const result = await query(
       `
-        SELECT id, user_id, status, day, time, paid_at
+        SELECT id, user_id, status, day, time, paid_at, expires_at
         FROM bookings
         WHERE id = $1
         LIMIT 1;
@@ -1150,6 +1073,7 @@ app.get(
       day: booking.day,
       time: booking.time,
       paidAt: booking.paid_at,
+      expiresAt: booking.expires_at,
     });
   })
 );
@@ -1158,8 +1082,7 @@ app.get(
   "/api/bookings",
   authMiddleware,
   asyncHandler(async (req, res) => {
-    await processDuePixConfirmations();
-    await processDuePlanConfirmations();
+    await expirePendingPayments();
     const result = await query(
       req.user.role === "admin"
         ? "SELECT * FROM bookings ORDER BY created_at DESC"
@@ -1172,50 +1095,179 @@ app.get(
 );
 
 app.post(
+  "/api/payments/webhook",
+  asyncHandler(async (req, res) => {
+    if (!PAYMENT_WEBHOOK_TOKEN) {
+      return res.status(503).json({ message: "Webhook de pagamento nao configurado." });
+    }
+
+    const receivedToken = req.headers["x-payment-webhook-token"];
+    if (receivedToken !== PAYMENT_WEBHOOK_TOKEN) {
+      return res.status(401).json({ message: "Webhook nao autorizado." });
+    }
+
+    const paymentCode = String(req.body.paymentCode || "").trim();
+    const status = normalizeWebhookStatus(req.body.status);
+    const paidAt = req.body.paidAt ? new Date(req.body.paidAt) : new Date();
+
+    if (!paymentCode) {
+      return res.status(400).json({ message: "paymentCode obrigatorio." });
+    }
+
+    if (status !== "paid") {
+      return res.json({ ok: true, ignored: true, reason: "status_not_paid" });
+    }
+
+    const paidAtValue = Number.isNaN(paidAt.getTime()) ? new Date() : paidAt;
+    const client = await pool.connect();
+
+    try {
+      await client.query("BEGIN");
+      await expirePendingPayments(client);
+
+      const purchaseResult = await client.query(
+        `
+          SELECT *
+          FROM plan_purchases
+          WHERE payment_code = $1
+            AND status = 'pending_payment'
+            AND (expires_at IS NULL OR expires_at > NOW())
+          ORDER BY created_at DESC
+          LIMIT 1
+          FOR UPDATE;
+        `,
+        [paymentCode]
+      );
+
+      const purchase = purchaseResult.rows[0];
+      if (purchase) {
+        await client.query(
+          `
+            UPDATE plan_purchases
+            SET status = 'confirmed',
+                paid_at = $2
+            WHERE id = $1;
+          `,
+          [purchase.id, paidAtValue]
+        );
+
+        await client.query(
+          `
+            UPDATE users
+            SET plan_type = $1,
+                preferred_cut = '',
+                plan_month_key = $2,
+                common_cuts_used = 0,
+                updated_at = NOW()
+            WHERE id = $3;
+          `,
+          [purchase.plan_type, getCurrentMonthKey(), purchase.user_id]
+        );
+
+        await client.query("COMMIT");
+        return res.json({
+          ok: true,
+          type: "plan_purchase",
+          id: purchase.id,
+          status: "confirmed",
+        });
+      }
+
+      const bookingResult = await client.query(
+        `
+          SELECT *
+          FROM bookings
+          WHERE payment_code = $1
+            AND status = 'pending_payment'
+            AND (expires_at IS NULL OR expires_at > NOW())
+          ORDER BY created_at DESC
+          LIMIT 1
+          FOR UPDATE;
+        `,
+        [paymentCode]
+      );
+
+      const booking = bookingResult.rows[0];
+      if (booking) {
+        await client.query(
+          `
+            UPDATE bookings
+            SET status = 'confirmed',
+                paid_at = $2
+            WHERE id = $1
+              AND status = 'pending_payment'
+            RETURNING id;
+          `,
+          [booking.id, paidAtValue]
+        );
+
+        await client.query("COMMIT");
+        return res.json({
+          ok: true,
+          type: "booking",
+          id: booking.id,
+          status: "confirmed",
+        });
+      }
+
+      await client.query("COMMIT");
+      return res.status(404).json({ ok: false, message: "Pagamento pendente nao encontrado ou expirado." });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  })
+);
+
+app.post(
   "/api/admin/bookings/:bookingId/confirm-payment",
   authMiddleware,
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const bookingId = Number.parseInt(req.params.bookingId, 10);
+    return res.status(410).json({
+      message: "Confirmacao manual do admin foi desativada. A aprovacao ocorre automaticamente no recebimento do pagamento.",
+    });
+  })
+);
 
-    if (!Number.isInteger(bookingId)) {
-      return res.status(400).json({ message: "Agendamento invalido." });
-    }
+app.get(
+  "/api/admin/plan-purchases",
+  authMiddleware,
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    await expirePendingPayments();
+    const result = await query(
+      `
+        SELECT
+          pp.id,
+          pp.user_id,
+          pp.plan_type,
+          pp.amount,
+          pp.status,
+          pp.created_at,
+          pp.paid_at,
+          u.username,
+          u.name
+        FROM plan_purchases pp
+        INNER JOIN users u ON u.id = pp.user_id
+        WHERE pp.status = 'pending_payment'
+        ORDER BY pp.created_at ASC;
+      `
+    );
 
-    let result;
-    try {
-      result = await query(
-        `
-          UPDATE bookings
-          SET status = 'confirmed',
-              paid_at = NOW()
-          WHERE id = $1
-            AND status = 'pending_payment'
-          RETURNING *;
-        `,
-        [bookingId]
-      );
-    } catch (error) {
-      if (error.code === "23505") {
-        return res.status(409).json({ message: "Horario ja ocupado por outro agendamento confirmado." });
-      }
-      throw error;
-    }
+    return res.json(result.rows);
+  })
+);
 
-    const booking = result.rows[0];
-    if (!booking) {
-      return res.status(404).json({ message: "Agendamento pendente nao encontrado." });
-    }
-
-    return res.json({
-      message: "Pagamento confirmado e agendamento marcado como ocupado.",
-      booking: {
-        id: booking.id,
-        day: booking.day,
-        time: booking.time,
-        status: booking.status,
-        paidAt: booking.paid_at,
-      },
+app.post(
+  "/api/admin/plan-purchases/:purchaseId/confirm-payment",
+  authMiddleware,
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    return res.status(410).json({
+      message: "Confirmacao manual do admin foi desativada. O plano ativa automaticamente na compensacao PIX.",
     });
   })
 );
@@ -1267,7 +1319,7 @@ app.get(
   authMiddleware,
   requireAdmin,
   asyncHandler(async (req, res) => {
-    await processDuePixConfirmations();
+    await expirePendingPayments();
     const normalizedDay = normalizeDay(req.query.day);
 
     if (!isValidDayInCurrentMonth(normalizedDay)) {
