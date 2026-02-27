@@ -64,6 +64,7 @@ const COMMON_MONTHLY_PRICE = 39.9;
 const PLUS_MONTHLY_PRICE = 79.9;
 const PIX_KEY = process.env.PIX_KEY || "ee96c7d1-b09b-46ad-a324-42ee01713b38";
 const PIX_QR_IMAGE_URL = process.env.PIX_QR_IMAGE_URL || "/images/qrcode-pix.png";
+const APP_TIMEZONE = process.env.APP_TIMEZONE || "America/Fortaleza";
 
 const sessions = new Map();
 
@@ -87,17 +88,24 @@ function buildPixPayment(prefix, description) {
 
 function getCurrentMonthContext() {
   const now = new Date();
-  const year = now.getFullYear();
-  const month = now.getMonth() + 1;
-  const today = now.getDate();
+  const formatter = new Intl.DateTimeFormat("pt-BR", {
+    timeZone: APP_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+  const parts = formatter.formatToParts(now);
+  const year = Number(parts.find((item) => item.type === "year")?.value);
+  const month = Number(parts.find((item) => item.type === "month")?.value);
+  const today = Number(parts.find((item) => item.type === "day")?.value);
   const daysInMonth = new Date(year, month, 0).getDate();
 
   return { year, month, today, daysInMonth };
 }
 
 function getCurrentMonthKey() {
-  const now = new Date();
-  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+  const { year, month } = getCurrentMonthContext();
+  return `${year}-${String(month).padStart(2, "0")}`;
 }
 
 function normalizeDay(day) {
