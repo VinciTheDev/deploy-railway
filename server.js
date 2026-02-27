@@ -66,6 +66,7 @@ const PLUS_MONTHLY_PRICE = 79.9;
 const PIX_KEY = process.env.PIX_KEY || "74cf1734-d27d-4d2f-ad2d-4365f5ce7973";
 const PIX_QR_IMAGE_URL = process.env.PIX_QR_IMAGE_URL || "/images/qrcode-pix.png";
 const APP_TIMEZONE = process.env.APP_TIMEZONE || "America/Fortaleza";
+const PIX_AUTO_CONFIRM_SECONDS = Number.parseInt(process.env.PIX_AUTO_CONFIRM_SECONDS || "30", 10);
 
 const sessions = new Map();
 
@@ -220,6 +221,24 @@ function parseBookingRow(row) {
 
 async function query(text, params = []) {
   return pool.query(text, params);
+}
+
+async function processDuePixConfirmations() {
+  const waitSeconds = Number.isInteger(PIX_AUTO_CONFIRM_SECONDS) && PIX_AUTO_CONFIRM_SECONDS >= 0
+    ? PIX_AUTO_CONFIRM_SECONDS
+    : 30;
+
+  await query(
+    `
+      UPDATE bookings
+      SET status = 'confirmed',
+          paid_at = COALESCE(paid_at, NOW())
+      WHERE status = 'pending_payment'
+        AND payment_method = 'pix'
+        AND created_at <= NOW() - make_interval(secs => $1::int);
+    `,
+    [waitSeconds]
+  );
 }
 
 async function getUserById(id) {
@@ -822,6 +841,7 @@ app.get(
   "/api/schedule/day",
   authMiddleware,
   asyncHandler(async (req, res) => {
+    await processDuePixConfirmations();
     const normalizedDay = normalizeDay(req.query.day);
 
     if (!isValidDayInCurrentMonth(normalizedDay)) {
@@ -1055,6 +1075,7 @@ app.get(
   "/api/bookings",
   authMiddleware,
   asyncHandler(async (req, res) => {
+    await processDuePixConfirmations();
     const result = await query(
       req.user.role === "admin"
         ? "SELECT * FROM bookings ORDER BY created_at DESC"
@@ -1162,6 +1183,7 @@ app.get(
   authMiddleware,
   requireAdmin,
   asyncHandler(async (req, res) => {
+    await processDuePixConfirmations();
     const normalizedDay = normalizeDay(req.query.day);
 
     if (!isValidDayInCurrentMonth(normalizedDay)) {

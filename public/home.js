@@ -19,6 +19,8 @@ const copyPixKeyBtn = document.getElementById("copyPixKeyBtn");
 let selectedTime = "";
 let slotsRequestId = 0;
 let isCreatingPayment = false;
+let slotRefreshTimer = null;
+let slotRefreshStopTimer = null;
 const SERVICE_DURATIONS = {
   corte_social: 30,
   corte_tradicional: 30,
@@ -50,6 +52,27 @@ function setFeedback(message, type) {
 function setPaymentFeedback(message, type) {
   paymentFeedback.textContent = message;
   paymentFeedback.className = `feedback ${type}`;
+}
+
+function stopAutoRefreshSlots() {
+  if (slotRefreshTimer) {
+    clearInterval(slotRefreshTimer);
+    slotRefreshTimer = null;
+  }
+  if (slotRefreshStopTimer) {
+    clearTimeout(slotRefreshStopTimer);
+    slotRefreshStopTimer = null;
+  }
+}
+
+function startAutoRefreshSlots() {
+  stopAutoRefreshSlots();
+  slotRefreshTimer = setInterval(() => {
+    loadSlots().catch(() => {});
+  }, 5000);
+  slotRefreshStopTimer = setTimeout(() => {
+    stopAutoRefreshSlots();
+  }, 120000);
 }
 
 async function copyText(text) {
@@ -281,7 +304,8 @@ async function createPayment() {
     pixKey.textContent = data.payment.pixKey;
     paymentCard.classList.remove("hidden");
     setFeedback(data.message, "success");
-    setPaymentFeedback("Pagamento recebido. A confirmacao do agendamento ocorre automaticamente.", "");
+    setPaymentFeedback("Pagamento em analise. O horario muda para ocupado automaticamente apos confirmacao.", "");
+    startAutoRefreshSlots();
     await loadSlots();
   } catch (_error) {
     setFeedback("Erro de conexao com o servidor.", "error");
@@ -302,6 +326,7 @@ logoutButton.addEventListener("click", async () => {
   }
 
   localStorage.removeItem(TOKEN_KEY);
+  stopAutoRefreshSlots();
   window.location.href = "/";
 });
 
