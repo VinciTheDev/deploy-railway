@@ -4,10 +4,13 @@
   "description": "Site simples com agendamento para a Evilazio Barbershop",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "check": "node --check server.js"
   },
   "dependencies": {
     "express": "^4.19.2",
+    "express-rate-limit": "^8.2.1",
+    "helmet": "^8.1.0",
     "pg": "^8.19.0"
   }
 }

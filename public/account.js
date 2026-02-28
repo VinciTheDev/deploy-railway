@@ -8,6 +8,8 @@ const feedback = document.getElementById("accountFeedback");
 const backBtn = document.getElementById("backBtn");
 const buyPlusBtn = document.getElementById("buyPlusBtn");
 const planInfo = document.getElementById("planInfo");
+const saveBtn = form.querySelector('button[type="submit"]');
+let isSaving = false;
 
 function getToken() {
   return localStorage.getItem(TOKEN_KEY);
@@ -60,6 +62,9 @@ async function loadMe() {
 
 form.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (isSaving) {
+    return;
+  }
 
   const payload = {
     displayName: displayNameInput.value.trim(),
@@ -71,24 +76,34 @@ form.addEventListener("submit", async (event) => {
     payload.password = newPassword;
   }
 
-  const response = await fetch("/api/profile", {
-    method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      ...authHeaders(),
-    },
-    body: JSON.stringify(payload),
-  });
+  isSaving = true;
+  saveBtn.disabled = true;
 
-  const data = await response.json();
+  try {
+    const response = await fetch("/api/profile", {
+      method: "PUT",
+      headers: {
+        "Content-Type": "application/json",
+        ...authHeaders(),
+      },
+      body: JSON.stringify(payload),
+    });
 
-  if (!response.ok) {
-    setFeedback(data.message || "Nao foi possivel atualizar conta.", "error");
-    return;
+    const data = await response.json();
+
+    if (!response.ok) {
+      setFeedback(data.message || "Nao foi possivel atualizar conta.", "error");
+      return;
+    }
+
+    passwordInput.value = "";
+    setFeedback("Conta atualizada com sucesso.", "success");
+  } catch (_error) {
+    setFeedback("Erro de conexao com o servidor.", "error");
+  } finally {
+    isSaving = false;
+    saveBtn.disabled = false;
   }
-
-  passwordInput.value = "";
-  setFeedback("Conta atualizada com sucesso.", "success");
 });
 
 backBtn.addEventListener("click", () => {

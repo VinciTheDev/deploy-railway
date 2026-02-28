@@ -3,9 +3,13 @@ const path = require("path");
 const crypto = require("crypto");
 const { promisify } = require("util");
 const { Pool } = require("pg");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const NODE_ENV = String(process.env.NODE_ENV || "development").toLowerCase();
+const IS_PRODUCTION = NODE_ENV === "production";
+const PORT = Number.parseInt(process.env.PORT || "3000", 10);
 const scryptAsync = promisify(crypto.scrypt);
 
 const DATABASE_URL = process.env.DATABASE_URL || process.env.POSTGRES_URL || process.env.POSTGRESQL_URL;
@@ -29,11 +33,14 @@ const pool = new Pool({
   user: process.env.PGUSER || undefined,
   password: process.env.PGPASSWORD || undefined,
   database: process.env.PGDATABASE || undefined,
-  ssl: process.env.NODE_ENV === "production" ? { rejectUnauthorized: false } : undefined,
+  ssl: IS_PRODUCTION ? { rejectUnauthorized: false } : undefined,
 });
 
-const ADMIN_USERNAME = "admin";
-const ADMIN_PASSWORD = "001212";
+const ADMIN_USERNAME = String(process.env.ADMIN_USERNAME || "admin")
+  .trim()
+  .toLowerCase();
+const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "").trim();
+const RESET_ADMIN_PASSWORD_ON_BOOT = String(process.env.RESET_ADMIN_PASSWORD_ON_BOOT || "false").toLowerCase() === "true";
 
 const SLOT_TIMES = Array.from({ length: 12 }, (_, index) => {
   const hour = 8 + index;
@@ -63,20 +70,87 @@ const CUT_SERVICE_KEYS = new Set([
 const COMMON_MONTHLY_FREE_CUTS = 2;
 const COMMON_MONTHLY_PRICE = 39.9;
 const PLUS_MONTHLY_PRICE = 79.9;
+const SERVICE_PRICES = {
+  corte_social: 35,
+  corte_tradicional: 35,
+  corte_degrade: 40,
+  corte_navalhado: 45,
+  barba: 20,
+  sobrancelha: 15,
+  pezinho: 20,
+  corte_barba: 55,
+  corte_barba_sobrancelha: 65,
+  teste_pix_1_centavo: 0.01,
+};
 const PAYMENT_EXPIRATION_MINUTES = Number.parseInt(process.env.PAYMENT_EXPIRATION_MINUTES || "20", 10);
 const PAYMENT_SWEEP_INTERVAL_MS = Number.parseInt(process.env.PAYMENT_SWEEP_INTERVAL_MS || "30000", 10);
 const PIX_KEY = "ee96c7d1-b09b-46ad-a324-42ee01713b38";
 const PIX_QR_IMAGE_URL = process.env.PIX_QR_IMAGE_URL || "/images/qrcode-pix.png";
 const APP_TIMEZONE = process.env.APP_TIMEZONE || "America/Fortaleza";
 const PAYMENT_WEBHOOK_TOKEN = process.env.PAYMENT_WEBHOOK_TOKEN || "";
+const APP_BASE_URL = String(process.env.APP_BASE_URL || "").replace(/\/+$/, "");
+const PIX_PROVIDER = String(process.env.PIX_PROVIDER || "").toLowerCase();
+const MERCADO_PAGO_ACCESS_TOKEN = String(process.env.MERCADO_PAGO_ACCESS_TOKEN || "").trim();
+const MERCADO_PAGO_WEBHOOK_SECRET = String(process.env.MERCADO_PAGO_WEBHOOK_SECRET || "").trim();
+const MERCADO_PAGO_API_BASE_URL = String(process.env.MERCADO_PAGO_API_BASE_URL || "https://api.mercadopago.com").replace(/\/+$/, "");
+const MERCADO_PAGO_NOTIFICATION_URL =
+  String(process.env.MERCADO_PAGO_NOTIFICATION_URL || "").trim() ||
+  (APP_BASE_URL ? `${APP_BASE_URL}/api/payments/webhook/mercadopago` : "");
+const MERCADO_PAGO_DEFAULT_PAYER_EMAIL = String(process.env.MERCADO_PAGO_DEFAULT_PAYER_EMAIL || "checkout@evilaziobarbershop.com").trim();
+const SESSION_TTL_MS = Number.parseInt(process.env.SESSION_TTL_MS || `${12 * 60 * 60 * 1000}`, 10);
+const SESSION_SWEEP_INTERVAL_MS = Number.parseInt(process.env.SESSION_SWEEP_INTERVAL_MS || `${5 * 60 * 1000}`, 10);
+const MAX_JSON_BODY_SIZE = process.env.MAX_JSON_BODY_SIZE || "100kb";
+const MAX_ACTIVE_SESSIONS = Number.parseInt(process.env.MAX_ACTIVE_SESSIONS || "5000", 10);
 
 const sessions = new Map();
 
-app.use(express.json());
+app.disable("x-powered-by");
+app.set("trust proxy", 1);
+
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'"],
+        connectSrc: ["'self'"],
+        imgSrc: ["'self'", "data:", "https://api.qrserver.com", "https://www.mercadopago.com", "https://http2.mlstatic.com"],
+        styleSrc: ["'self'", "https://fonts.googleapis.com"],
+        fontSrc: ["'self'", "https://fonts.gstatic.com"],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'none'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+      },
+    },
+    referrerPolicy: { policy: "no-referrer" },
+    hsts: IS_PRODUCTION ? undefined : false,
+  })
+);
+
+app.use(express.json({ limit: MAX_JSON_BODY_SIZE }));
 app.use(express.static(path.join(__dirname, "public")));
 
-function buildPixPayment(prefix, description) {
-  const paymentCode = `${prefix}${Date.now()}${crypto.randomBytes(3).toString("hex")}`;
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 500,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Muitas requisicoes. Tente novamente em alguns minutos." },
+});
+
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Muitas tentativas de acesso. Aguarde alguns minutos." },
+});
+
+app.use("/api", apiLimiter);
+
+function buildPixPayment(prefix, description, providedPaymentCode = "") {
+  const paymentCode = String(providedPaymentCode || "").trim() || `${prefix}${Date.now()}${crypto.randomBytes(3).toString("hex")}`;
   const qrText = `PIX|${PIX_KEY}|${paymentCode}|${description}`;
   const qrImageUrl =
     PIX_QR_IMAGE_URL ||
@@ -161,6 +235,136 @@ function getServiceDuration(service) {
   return key ? SERVICE_DURATIONS[key] || null : null;
 }
 
+function getServicePrice(service) {
+  const key = normalizeServiceKey(service);
+  if (!key) {
+    return null;
+  }
+  const amount = Number(SERVICE_PRICES[key]);
+  return Number.isFinite(amount) && amount > 0 ? amount : null;
+}
+
+function normalizeUsernameInput(value) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase();
+
+  if (!/^[a-z0-9._-]{3,32}$/.test(normalized)) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function normalizeDisplayNameInput(value) {
+  const normalized = String(value || "").trim().replace(/\s+/g, " ");
+  if (normalized.length < 2 || normalized.length > 80) {
+    return null;
+  }
+  return normalized;
+}
+
+function normalizePhoneInput(value) {
+  const normalized = String(value || "")
+    .trim()
+    .replace(/[^\d+\-() ]/g, "")
+    .replace(/\s+/g, " ");
+
+  if (normalized.length < 8 || normalized.length > 25) {
+    return null;
+  }
+
+  return normalized;
+}
+
+function getSessionTtlMs() {
+  if (!Number.isFinite(SESSION_TTL_MS) || SESSION_TTL_MS < 5 * 60 * 1000) {
+    return 12 * 60 * 60 * 1000;
+  }
+  return SESSION_TTL_MS;
+}
+
+function getSessionSweepIntervalMs() {
+  if (!Number.isFinite(SESSION_SWEEP_INTERVAL_MS) || SESSION_SWEEP_INTERVAL_MS < 60 * 1000) {
+    return 5 * 60 * 1000;
+  }
+  return SESSION_SWEEP_INTERVAL_MS;
+}
+
+function cleanupExpiredSessions() {
+  const now = Date.now();
+  for (const [token, session] of sessions.entries()) {
+    if (!session || !Number.isFinite(session.expiresAt) || session.expiresAt <= now) {
+      sessions.delete(token);
+    }
+  }
+}
+
+function shouldUseMercadoPago() {
+  if (PIX_PROVIDER === "mock") {
+    return false;
+  }
+  if (PIX_PROVIDER === "mercadopago") {
+    return Boolean(MERCADO_PAGO_ACCESS_TOKEN);
+  }
+  return Boolean(MERCADO_PAGO_ACCESS_TOKEN);
+}
+
+function getMercadoPagoNotificationUrl() {
+  return MERCADO_PAGO_NOTIFICATION_URL || "";
+}
+
+function toMoneyAmount(value) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return null;
+  }
+  return Number(parsed.toFixed(2));
+}
+
+function buildInternalPaymentCode(prefix) {
+  return `${prefix}${Date.now()}${crypto.randomBytes(4).toString("hex")}`;
+}
+
+function buildMercadoPagoPayerEmail(user) {
+  const username = normalizeUsernameInput(user?.username) || "cliente";
+  if (MERCADO_PAGO_DEFAULT_PAYER_EMAIL) {
+    return MERCADO_PAGO_DEFAULT_PAYER_EMAIL.replace("{username}", username);
+  }
+  return `${username}+checkout@evilaziobarbershop.com`;
+}
+
+function parseExternalReferenceData(externalReference) {
+  const normalized = String(externalReference || "").trim();
+  if (!normalized) {
+    return { bookingId: null, purchaseId: null, paymentCode: "" };
+  }
+
+  const bookingMatch = normalized.match(/^booking_(\d+)_([\w-]+)$/i);
+  if (bookingMatch) {
+    return {
+      bookingId: Number.parseInt(bookingMatch[1], 10),
+      purchaseId: null,
+      paymentCode: bookingMatch[2],
+    };
+  }
+
+  const purchaseMatch = normalized.match(/^plan_(\d+)_([\w-]+)$/i);
+  if (purchaseMatch) {
+    return {
+      bookingId: null,
+      purchaseId: Number.parseInt(purchaseMatch[1], 10),
+      paymentCode: purchaseMatch[2],
+    };
+  }
+
+  return {
+    bookingId: null,
+    purchaseId: null,
+    paymentCode: normalized,
+  };
+}
+
 function normalizeUserPlan(row) {
   const monthKey = getCurrentMonthKey();
   const type = ["none", "common", "plus"].includes(String(row.plan_type || ""))
@@ -208,6 +412,9 @@ function parseBookingRow(row) {
     status: row.status,
     payment: {
       method: row.payment_method,
+      provider: row.payment_provider || "mock",
+      providerPaymentId: row.payment_provider_id || null,
+      externalReference: row.payment_external_reference || null,
       pixKey: row.payment_pix_key,
       paymentCode: row.payment_code,
       qrText: row.payment_qr_text,
@@ -325,6 +532,169 @@ function extractWebhookStatus(body) {
   );
 }
 
+function getMercadoPagoWebhookDataId(req) {
+  const queryDataId = req.query?.["data.id"];
+  const queryId = req.query?.id;
+  const bodyDataId = req.body?.data?.id;
+  const bodyId = req.body?.id;
+
+  const parsed = Number.parseInt(String(queryDataId || queryId || bodyDataId || bodyId || ""), 10);
+  return Number.isInteger(parsed) ? parsed : null;
+}
+
+function normalizeMercadoPagoStatus(status) {
+  const normalized = String(status || "")
+    .toLowerCase()
+    .trim();
+
+  if (normalized === "approved") {
+    return "paid";
+  }
+
+  if (["pending", "in_process", "in_mediation", "authorized"].includes(normalized)) {
+    return "pending";
+  }
+
+  if (["rejected", "cancelled", "cancelled_by_user", "charged_back", "refunded"].includes(normalized)) {
+    return "failed";
+  }
+
+  return normalized;
+}
+
+function validateMercadoPagoWebhookSignature(req) {
+  if (!MERCADO_PAGO_WEBHOOK_SECRET) {
+    return true;
+  }
+
+  const xSignature = String(req.headers["x-signature"] || "").trim();
+  const xRequestId = String(req.headers["x-request-id"] || "").trim();
+  const dataId = String(req.query?.["data.id"] || req.body?.data?.id || "").trim();
+  if (!xSignature || !xRequestId || !dataId) {
+    return false;
+  }
+
+  const parts = xSignature
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  const ts = parts.find((part) => part.startsWith("ts="))?.slice(3) || "";
+  const v1 = parts.find((part) => part.startsWith("v1="))?.slice(3) || "";
+  if (!ts || !v1) {
+    return false;
+  }
+
+  const manifest = `id:${dataId};request-id:${xRequestId};ts:${ts};`;
+  const hmac = crypto.createHmac("sha256", MERCADO_PAGO_WEBHOOK_SECRET).update(manifest).digest("hex");
+  const digestBuffer = Buffer.from(hmac);
+  const signatureBuffer = Buffer.from(v1);
+  if (digestBuffer.length !== signatureBuffer.length) {
+    return false;
+  }
+  return crypto.timingSafeEqual(digestBuffer, signatureBuffer);
+}
+
+async function createMercadoPagoPixPayment({
+  amount,
+  description,
+  externalReference,
+  payerEmail,
+  metadata,
+}) {
+  if (!MERCADO_PAGO_ACCESS_TOKEN) {
+    throw new Error("MERCADO_PAGO_ACCESS_TOKEN nao configurado.");
+  }
+
+  const payload = {
+    transaction_amount: amount,
+    description,
+    payment_method_id: "pix",
+    payer: {
+      email: payerEmail,
+    },
+    external_reference: externalReference,
+    notification_url: getMercadoPagoNotificationUrl() || undefined,
+    metadata: metadata || undefined,
+  };
+
+  const idempotencyKey = crypto.randomUUID();
+  const response = await fetch(`${MERCADO_PAGO_API_BASE_URL}/v1/payments`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${MERCADO_PAGO_ACCESS_TOKEN}`,
+      "X-Idempotency-Key": idempotencyKey,
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const bodyText = await response.text();
+  let responseBody = {};
+  if (bodyText) {
+    try {
+      responseBody = JSON.parse(bodyText);
+    } catch (_error) {
+      responseBody = { raw: bodyText };
+    }
+  }
+
+  if (!response.ok) {
+    const detail = responseBody?.message || responseBody?.cause?.[0]?.description || "Erro ao criar pagamento PIX no Mercado Pago.";
+    throw new Error(detail);
+  }
+
+  const paymentId = responseBody?.id ? String(responseBody.id) : "";
+  const txData = responseBody?.point_of_interaction?.transaction_data || {};
+  const qrCode = String(txData?.qr_code || "").trim();
+  const qrCodeBase64 = String(txData?.qr_code_base64 || "").trim();
+  const qrImageUrl = qrCodeBase64 ? `data:image/png;base64,${qrCodeBase64}` : PIX_QR_IMAGE_URL;
+
+  return {
+    providerPaymentId: paymentId,
+    status: String(responseBody?.status || "").trim().toLowerCase(),
+    externalReference: String(responseBody?.external_reference || externalReference || "").trim(),
+    qrCode,
+    qrImageUrl,
+    ticketUrl: String(txData?.ticket_url || "").trim(),
+    raw: responseBody,
+  };
+}
+
+async function getMercadoPagoPaymentById(paymentId) {
+  if (!MERCADO_PAGO_ACCESS_TOKEN) {
+    throw new Error("MERCADO_PAGO_ACCESS_TOKEN nao configurado.");
+  }
+
+  const normalizedId = String(paymentId || "").trim();
+  if (!normalizedId) {
+    throw new Error("paymentId do Mercado Pago invalido.");
+  }
+
+  const response = await fetch(`${MERCADO_PAGO_API_BASE_URL}/v1/payments/${encodeURIComponent(normalizedId)}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${MERCADO_PAGO_ACCESS_TOKEN}`,
+    },
+  });
+
+  const bodyText = await response.text();
+  let responseBody = {};
+  if (bodyText) {
+    try {
+      responseBody = JSON.parse(bodyText);
+    } catch (_error) {
+      responseBody = { raw: bodyText };
+    }
+  }
+
+  if (!response.ok) {
+    const detail = responseBody?.message || "Falha ao consultar pagamento no Mercado Pago.";
+    throw new Error(detail);
+  }
+
+  return responseBody;
+}
+
 async function query(text, params = []) {
   return pool.query(text, params);
 }
@@ -398,6 +768,9 @@ async function initDatabase() {
       time CHAR(5) NOT NULL,
       status TEXT NOT NULL,
       payment_method TEXT,
+      payment_provider TEXT,
+      payment_provider_id TEXT,
+      payment_external_reference TEXT,
       payment_pix_key TEXT,
       payment_code TEXT,
       payment_qr_text TEXT,
@@ -420,6 +793,9 @@ async function initDatabase() {
       status TEXT NOT NULL,
       pix_key TEXT,
       payment_code TEXT,
+      payment_provider TEXT,
+      payment_provider_id TEXT,
+      payment_external_reference TEXT,
       qr_text TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       expires_at TIMESTAMPTZ,
@@ -429,6 +805,12 @@ async function initDatabase() {
 
   await query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;");
   await query("ALTER TABLE plan_purchases ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ;");
+  await query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payment_provider TEXT;");
+  await query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payment_provider_id TEXT;");
+  await query("ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payment_external_reference TEXT;");
+  await query("ALTER TABLE plan_purchases ADD COLUMN IF NOT EXISTS payment_provider TEXT;");
+  await query("ALTER TABLE plan_purchases ADD COLUMN IF NOT EXISTS payment_provider_id TEXT;");
+  await query("ALTER TABLE plan_purchases ADD COLUMN IF NOT EXISTS payment_external_reference TEXT;");
 
   await query(
     `
@@ -486,65 +868,93 @@ async function initDatabase() {
     ON bookings(day, time)
     WHERE status IN ('pending_payment', 'confirmed');
   `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_bookings_payment_code
+    ON bookings(payment_code);
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_plan_purchases_payment_code
+    ON plan_purchases(payment_code);
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_bookings_provider_payment
+    ON bookings(payment_provider, payment_provider_id);
+  `);
+
+  await query(`
+    CREATE INDEX IF NOT EXISTS idx_plan_purchases_provider_payment
+    ON plan_purchases(payment_provider, payment_provider_id);
+  `);
 }
 
 async function ensureAdminOnly() {
-  const adminPasswordHash = await hashPassword(ADMIN_PASSWORD);
   const monthKey = getCurrentMonthKey();
-
-  await query(
-    `
-      INSERT INTO users (username, name, phone, role, password_hash, plan_type, preferred_cut, plan_month_key, common_cuts_used)
-      VALUES ($1, $2, '', 'admin', $3, 'none', '', $4, 0)
-      ON CONFLICT (username)
-      DO UPDATE SET
-        name = EXCLUDED.name,
-        phone = EXCLUDED.phone,
-        role = EXCLUDED.role,
-        password_hash = EXCLUDED.password_hash,
-        plan_type = 'none',
-        preferred_cut = '',
-        plan_month_key = EXCLUDED.plan_month_key,
-        common_cuts_used = 0,
-        updated_at = NOW();
-    `,
-    [ADMIN_USERNAME, "Administrador", adminPasswordHash, monthKey]
+  const existingAdminResult = await query(
+    "SELECT id FROM users WHERE username = $1 LIMIT 1",
+    [ADMIN_USERNAME]
   );
+  const existingAdmin = existingAdminResult.rows[0];
 
-  const markerResult = await query(
-    "SELECT value FROM app_meta WHERE key = 'admin_only_seed_v1' LIMIT 1"
-  );
+  if (!existingAdmin && !ADMIN_PASSWORD) {
+    if (IS_PRODUCTION) {
+      throw new Error(
+        "ADMIN_PASSWORD nao configurada. Defina ADMIN_USERNAME e ADMIN_PASSWORD antes de subir em producao."
+      );
+    }
+    console.warn("ADMIN_PASSWORD nao configurada. Usando senha local padrao somente para desenvolvimento.");
+  }
 
-  if (markerResult.rows.length === 0) {
-    await query(
-      `
-        DELETE FROM bookings
-        WHERE user_id IN (SELECT id FROM users WHERE username <> $1);
-      `,
-      [ADMIN_USERNAME]
-    );
+  if (!existingAdmin) {
+    const initialPassword = ADMIN_PASSWORD || "001212";
+    const adminPasswordHash = await hashPassword(initialPassword);
 
     await query(
       `
-        DELETE FROM plan_purchases
-        WHERE user_id IN (SELECT id FROM users WHERE username <> $1);
+        INSERT INTO users (username, name, phone, role, password_hash, plan_type, preferred_cut, plan_month_key, common_cuts_used)
+        VALUES ($1, $2, '', 'admin', $3, 'none', '', $4, 0)
+        ON CONFLICT (username)
+        DO NOTHING;
       `,
-      [ADMIN_USERNAME]
+      [ADMIN_USERNAME, "Administrador", adminPasswordHash, monthKey]
     );
+    return;
+  }
 
-    await query("DELETE FROM users WHERE username <> $1", [ADMIN_USERNAME]);
+  if (RESET_ADMIN_PASSWORD_ON_BOOT && ADMIN_PASSWORD) {
+    const adminPasswordHash = await hashPassword(ADMIN_PASSWORD);
     await query(
-      "INSERT INTO app_meta (key, value) VALUES ('admin_only_seed_v1', $1)",
-      [new Date().toISOString()]
+      `
+        UPDATE users
+        SET password_hash = $2,
+            updated_at = NOW()
+        WHERE username = $1;
+      `,
+      [ADMIN_USERNAME, adminPasswordHash]
     );
   }
 }
 
-function createSession(userId) {
+function createSession(userId, req) {
+  cleanupExpiredSessions();
+  if (sessions.size >= MAX_ACTIVE_SESSIONS) {
+    // Remove the oldest session when limit is reached to avoid memory growth.
+    const oldest = [...sessions.entries()].sort((a, b) => (a[1]?.createdAt || 0) - (b[1]?.createdAt || 0))[0];
+    if (oldest?.[0]) {
+      sessions.delete(oldest[0]);
+    }
+  }
+
+  const now = Date.now();
   const token = crypto.randomBytes(24).toString("hex");
   sessions.set(token, {
     userId,
-    createdAt: Date.now(),
+    createdAt: now,
+    expiresAt: now + getSessionTtlMs(),
+    ip: req.ip,
+    userAgent: String(req.headers["user-agent"] || ""),
   });
   return token;
 }
@@ -567,6 +977,10 @@ async function authMiddleware(req, res, next) {
     }
 
     const session = sessions.get(token);
+    if (!session || !Number.isFinite(session.expiresAt) || session.expiresAt <= Date.now()) {
+      sessions.delete(token);
+      return res.status(401).json({ message: "Sessao expirada. Faca login novamente." });
+    }
     const user = await getUserById(session.userId);
 
     if (!user) {
@@ -574,6 +988,8 @@ async function authMiddleware(req, res, next) {
       return res.status(401).json({ message: "Sessao invalida." });
     }
 
+    session.expiresAt = Date.now() + getSessionTtlMs();
+    sessions.set(token, session);
     req.user = buildUserPayload(user);
     req.token = token;
     return next();
@@ -669,18 +1085,209 @@ async function buildDaySchedule(day) {
   });
 }
 
+async function confirmPlanPurchase(client, purchase, paidAtValue) {
+  await client.query(
+    `
+      UPDATE plan_purchases
+      SET status = 'confirmed',
+          paid_at = $2
+      WHERE id = $1;
+    `,
+    [purchase.id, paidAtValue]
+  );
+
+  await client.query(
+    `
+      UPDATE users
+      SET plan_type = $1,
+          preferred_cut = '',
+          plan_month_key = $2,
+          common_cuts_used = 0,
+          updated_at = NOW()
+      WHERE id = $3;
+    `,
+    [purchase.plan_type, getCurrentMonthKey(), purchase.user_id]
+  );
+
+  return {
+    ok: true,
+    type: "plan_purchase",
+    id: purchase.id,
+    status: "confirmed",
+  };
+}
+
+async function confirmBooking(client, booking, paidAtValue) {
+  await client.query(
+    `
+      UPDATE bookings
+      SET status = 'confirmed',
+          paid_at = $2
+      WHERE id = $1
+        AND status = 'pending_payment'
+      RETURNING id;
+    `,
+    [booking.id, paidAtValue]
+  );
+
+  return {
+    ok: true,
+    type: "booking",
+    id: booking.id,
+    status: "confirmed",
+  };
+}
+
+async function confirmPaymentByReferences(
+  client,
+  { paymentCode = "", bookingId = null, purchaseId = null, providerPaymentId = "", externalReference = "", paidAtValue = new Date() }
+) {
+  const paidAt = paidAtValue instanceof Date && !Number.isNaN(paidAtValue.getTime()) ? paidAtValue : new Date();
+  const normalizedPaymentCode = String(paymentCode || "").trim();
+  const normalizedProviderPaymentId = String(providerPaymentId || "").trim();
+  const externalReferenceData = parseExternalReferenceData(externalReference);
+
+  const possiblePurchaseIds = [purchaseId, externalReferenceData.purchaseId].filter(Number.isInteger);
+  const possibleBookingIds = [bookingId, externalReferenceData.bookingId].filter(Number.isInteger);
+  const possiblePaymentCodes = [normalizedPaymentCode, externalReferenceData.paymentCode].filter(Boolean);
+
+  for (const directPurchaseId of possiblePurchaseIds) {
+    const purchaseResult = await client.query(
+      `
+        SELECT *
+        FROM plan_purchases
+        WHERE id = $1
+          AND status = 'pending_payment'
+          AND (expires_at IS NULL OR expires_at > NOW())
+        LIMIT 1
+        FOR UPDATE;
+      `,
+      [directPurchaseId]
+    );
+    const purchase = purchaseResult.rows[0];
+    if (purchase) {
+      return confirmPlanPurchase(client, purchase, paidAt);
+    }
+  }
+
+  for (const directBookingId of possibleBookingIds) {
+    const bookingResult = await client.query(
+      `
+        SELECT *
+        FROM bookings
+        WHERE id = $1
+          AND status = 'pending_payment'
+          AND (expires_at IS NULL OR expires_at > NOW())
+        LIMIT 1
+        FOR UPDATE;
+      `,
+      [directBookingId]
+    );
+    const booking = bookingResult.rows[0];
+    if (booking) {
+      return confirmBooking(client, booking, paidAt);
+    }
+  }
+
+  if (normalizedProviderPaymentId) {
+    const providerPurchaseResult = await client.query(
+      `
+        SELECT *
+        FROM plan_purchases
+        WHERE payment_provider_id = $1
+          AND status = 'pending_payment'
+          AND (expires_at IS NULL OR expires_at > NOW())
+        ORDER BY created_at DESC
+        LIMIT 1
+        FOR UPDATE;
+      `,
+      [normalizedProviderPaymentId]
+    );
+
+    const providerPurchase = providerPurchaseResult.rows[0];
+    if (providerPurchase) {
+      return confirmPlanPurchase(client, providerPurchase, paidAt);
+    }
+
+    const providerBookingResult = await client.query(
+      `
+        SELECT *
+        FROM bookings
+        WHERE payment_provider_id = $1
+          AND status = 'pending_payment'
+          AND (expires_at IS NULL OR expires_at > NOW())
+        ORDER BY created_at DESC
+        LIMIT 1
+        FOR UPDATE;
+      `,
+      [normalizedProviderPaymentId]
+    );
+
+    const providerBooking = providerBookingResult.rows[0];
+    if (providerBooking) {
+      return confirmBooking(client, providerBooking, paidAt);
+    }
+  }
+
+  for (const code of possiblePaymentCodes) {
+    const purchaseResult = await client.query(
+      `
+        SELECT *
+        FROM plan_purchases
+        WHERE payment_code = $1
+          AND status = 'pending_payment'
+          AND (expires_at IS NULL OR expires_at > NOW())
+        ORDER BY created_at DESC
+        LIMIT 1
+        FOR UPDATE;
+      `,
+      [code]
+    );
+
+    const purchase = purchaseResult.rows[0];
+    if (purchase) {
+      return confirmPlanPurchase(client, purchase, paidAt);
+    }
+
+    const bookingResult = await client.query(
+      `
+        SELECT *
+        FROM bookings
+        WHERE payment_code = $1
+          AND status = 'pending_payment'
+          AND (expires_at IS NULL OR expires_at > NOW())
+        ORDER BY created_at DESC
+        LIMIT 1
+        FOR UPDATE;
+      `,
+      [code]
+    );
+
+    const booking = bookingResult.rows[0];
+    if (booking) {
+      return confirmBooking(client, booking, paidAt);
+    }
+  }
+
+  return null;
+}
+
 app.get("/", (_req, res) => {
   res.sendFile(path.join(__dirname, "public", "index.html"));
 });
 
 app.get("/api/health", (_req, res) => {
-  res.json({ ok: true });
+  res.json({
+    ok: true,
+    pixProvider: shouldUseMercadoPago() ? "mercadopago" : "mock",
+  });
 });
 
 app.post(
   "/api/register",
+  authLimiter,
   asyncHandler(async (req, res) => {
-    const { username, displayName, phone, password } = req.body;
+    const { username, displayName, phone, password } = req.body || {};
 
     if (!username || !displayName || !phone || !password) {
       return res.status(400).json({ message: "Preencha usuario, nome de exibicao, telefone e senha." });
@@ -689,12 +1296,26 @@ app.post(
     if (String(password).length < 6) {
       return res.status(400).json({ message: "A senha deve ter pelo menos 6 caracteres." });
     }
+    if (String(password).length > 128) {
+      return res.status(400).json({ message: "A senha excede o tamanho maximo permitido." });
+    }
 
-    const normalizedUsername = String(username).trim().toLowerCase();
-    const normalizedPhone = String(phone).trim();
+    const normalizedUsername = normalizeUsernameInput(username);
+    const normalizedDisplayName = normalizeDisplayNameInput(displayName);
+    const normalizedPhone = normalizePhoneInput(phone);
+
+    if (!normalizedUsername) {
+      return res.status(400).json({
+        message: "Usuario invalido. Use 3-32 caracteres com letras minusculas, numeros, ponto, underline ou hifen.",
+      });
+    }
+
+    if (!normalizedDisplayName) {
+      return res.status(400).json({ message: "Nome de exibicao invalido." });
+    }
 
     if (!normalizedPhone) {
-      return res.status(400).json({ message: "Telefone obrigatorio." });
+      return res.status(400).json({ message: "Telefone invalido." });
     }
 
     if (normalizedUsername === ADMIN_USERNAME) {
@@ -713,7 +1334,7 @@ app.post(
         INSERT INTO users (username, name, phone, role, password_hash, plan_type, preferred_cut, plan_month_key, common_cuts_used)
         VALUES ($1, $2, $3, 'user', $4, 'none', '', $5, 0);
       `,
-      [normalizedUsername, String(displayName).trim(), normalizedPhone, passwordHash, getCurrentMonthKey()]
+      [normalizedUsername, normalizedDisplayName, normalizedPhone, passwordHash, getCurrentMonthKey()]
     );
 
     return res.status(201).json({ message: "Cadastro realizado com sucesso." });
@@ -722,14 +1343,23 @@ app.post(
 
 app.post(
   "/api/login",
+  authLimiter,
   asyncHandler(async (req, res) => {
-    const { username, password } = req.body;
+    const { username, password } = req.body || {};
 
     if (!username || !password) {
       return res.status(400).json({ message: "Informe usuario e senha." });
     }
+    if (String(password).length > 128) {
+      return res.status(401).json({ message: "Credenciais invalidas." });
+    }
 
-    const user = await getUserByUsername(username);
+    const normalizedUsername = normalizeUsernameInput(username);
+    if (!normalizedUsername) {
+      return res.status(401).json({ message: "Credenciais invalidas." });
+    }
+
+    const user = await getUserByUsername(normalizedUsername);
     if (!user) {
       return res.status(401).json({ message: "Credenciais invalidas." });
     }
@@ -739,7 +1369,7 @@ app.post(
       return res.status(401).json({ message: "Credenciais invalidas." });
     }
 
-    const token = createSession(user.id);
+    const token = createSession(user.id, req);
 
     return res.json({
       message: "Login realizado.",
@@ -762,18 +1392,23 @@ app.put(
   "/api/profile",
   authMiddleware,
   asyncHandler(async (req, res) => {
-    const { displayName, phone, password } = req.body;
+    const { displayName, phone, password } = req.body || {};
+    const normalizedDisplayName = normalizeDisplayNameInput(displayName);
+    const normalizedPhone = normalizePhoneInput(phone);
 
-    if (!displayName || !String(displayName).trim()) {
-      return res.status(400).json({ message: "Nome de exibicao obrigatorio." });
+    if (!normalizedDisplayName) {
+      return res.status(400).json({ message: "Nome de exibicao invalido." });
     }
 
-    if (!phone || !String(phone).trim()) {
-      return res.status(400).json({ message: "Telefone obrigatorio." });
+    if (!normalizedPhone) {
+      return res.status(400).json({ message: "Telefone invalido." });
     }
 
     if (password && String(password).length < 6) {
       return res.status(400).json({ message: "A senha deve ter pelo menos 6 caracteres." });
+    }
+    if (password && String(password).length > 128) {
+      return res.status(400).json({ message: "A senha excede o tamanho maximo permitido." });
     }
 
     if (password) {
@@ -787,7 +1422,7 @@ app.put(
               updated_at = NOW()
           WHERE id = $4;
         `,
-        [String(displayName).trim(), String(phone).trim(), passwordHash, req.user.id]
+        [normalizedDisplayName, normalizedPhone, passwordHash, req.user.id]
       );
     } else {
       await query(
@@ -798,7 +1433,7 @@ app.put(
               updated_at = NOW()
           WHERE id = $3;
         `,
-        [String(displayName).trim(), String(phone).trim(), req.user.id]
+        [normalizedDisplayName, normalizedPhone, req.user.id]
       );
     }
 
@@ -847,34 +1482,105 @@ app.post(
     }
 
     const amount = normalizedPlanType === "plus" ? PLUS_MONTHLY_PRICE : COMMON_MONTHLY_PRICE;
-    const payment = buildPixPayment("PLAN", `Plano ${normalizedPlanType.toUpperCase()} Evilazio`);
+    const paymentCode = buildInternalPaymentCode("PLAN");
+    const payment = buildPixPayment("PLAN", `Plano ${normalizedPlanType.toUpperCase()} Evilazio`, paymentCode);
     const expiresAt = buildPaymentExpiryDate();
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const insert = await client.query(
+        `
+          INSERT INTO plan_purchases (
+            user_id, plan_type, preferred_cut, amount, status, pix_key, payment_code, qr_text, expires_at, payment_provider
+          )
+          VALUES ($1, $2, '', $3, 'pending_payment', $4, $5, $6, $7, $8)
+          RETURNING id;
+        `,
+        [
+          req.user.id,
+          normalizedPlanType,
+          amount,
+          payment.pixKey,
+          paymentCode,
+          payment.qrText,
+          expiresAt,
+          shouldUseMercadoPago() ? "mercadopago" : "mock",
+        ]
+      );
+      const purchaseId = insert.rows[0].id;
 
-    const insert = await query(
-      `
-        INSERT INTO plan_purchases (
-          user_id, plan_type, preferred_cut, amount, status, pix_key, payment_code, qr_text, expires_at
-        )
-        VALUES ($1, $2, '', $3, 'pending_payment', $4, $5, $6, $7)
-        RETURNING id;
-      `,
-      [req.user.id, normalizedPlanType, amount, payment.pixKey, payment.paymentCode, payment.qrText, expiresAt]
-    );
-    const purchaseId = insert.rows[0].id;
+      if (shouldUseMercadoPago()) {
+        const externalReference = `plan_${purchaseId}_${paymentCode}`;
+        const mercadoPagoPayment = await createMercadoPagoPixPayment({
+          amount: toMoneyAmount(amount),
+          description: `Plano ${normalizedPlanType.toUpperCase()} Evilazio`,
+          externalReference,
+          payerEmail: buildMercadoPagoPayerEmail(req.user),
+          metadata: {
+            purchaseId,
+            paymentCode,
+            source: "evilazio-barbershop",
+          },
+        });
 
-    return res.status(201).json({
-      message: "Pagamento PIX do plano gerado.",
-      purchaseId,
-      planType: normalizedPlanType,
-      amount,
-      payment: {
-        pixKey: payment.pixKey,
-        paymentCode: payment.paymentCode,
-        qrText: payment.qrText,
-        qrImageUrl: payment.qrImageUrl,
-        expiresAt,
-      },
-    });
+        await client.query(
+          `
+            UPDATE plan_purchases
+            SET status = 'pending_payment',
+                pix_key = '',
+                qr_text = $2,
+                payment_provider = 'mercadopago',
+                payment_provider_id = $3,
+                payment_external_reference = $4
+            WHERE id = $1;
+          `,
+          [
+            purchaseId,
+            mercadoPagoPayment.qrCode,
+            mercadoPagoPayment.providerPaymentId || null,
+            mercadoPagoPayment.externalReference,
+          ]
+        );
+
+        await client.query("COMMIT");
+        return res.status(201).json({
+          message: "Pagamento PIX do plano gerado no Mercado Pago.",
+          purchaseId,
+          planType: normalizedPlanType,
+          amount,
+          payment: {
+            provider: "mercadopago",
+            pixKey: mercadoPagoPayment.qrCode,
+            paymentCode,
+            qrText: mercadoPagoPayment.qrCode,
+            qrImageUrl: mercadoPagoPayment.qrImageUrl,
+            ticketUrl: mercadoPagoPayment.ticketUrl || null,
+            expiresAt,
+          },
+        });
+      }
+
+      await client.query("COMMIT");
+      return res.status(201).json({
+        message: "Pagamento PIX do plano gerado.",
+        purchaseId,
+        planType: normalizedPlanType,
+        amount,
+        payment: {
+          provider: "mock",
+          pixKey: payment.pixKey,
+          paymentCode,
+          qrText: payment.qrText,
+          qrImageUrl: payment.qrImageUrl,
+          expiresAt,
+        },
+      });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   })
 );
 
@@ -947,8 +1653,10 @@ app.post(
       return res.status(403).json({ message: "Admin nao realiza agendamento." });
     }
 
-    const { day, time, service, phone, paymentMethod } = req.body;
+    const { day, time, service, phone, paymentMethod } = req.body || {};
     const normalizedDay = normalizeDay(day);
+    const normalizedService = String(service || "").trim();
+    const normalizedPhone = normalizePhoneInput(phone);
 
     if (!normalizedDay || !isValidDayInCurrentMonth(normalizedDay)) {
       return res.status(400).json({ message: "Escolha um dia valido no mes atual, sem datas passadas." });
@@ -958,13 +1666,17 @@ app.post(
       return res.status(400).json({ message: "Horario invalido. Escolha entre 08:00 e 19:00." });
     }
 
-    if (!service || !phone) {
+    if (!normalizedService || !normalizedPhone) {
       return res.status(400).json({ message: "Informe servico e telefone." });
     }
 
-    const serviceDuration = getServiceDuration(service);
+    const serviceDuration = getServiceDuration(normalizedService);
     if (!serviceDuration) {
       return res.status(400).json({ message: "Servico invalido para agendamento." });
+    }
+    const servicePrice = getServicePrice(normalizedService);
+    if (!servicePrice) {
+      return res.status(400).json({ message: "Servico sem preco configurado." });
     }
 
     const normalizedPaymentMethod = String(paymentMethod || "pix").toLowerCase();
@@ -984,8 +1696,9 @@ app.post(
         }
 
         const userPlan = normalizeUserPlan(user);
-        const isCutService = CUT_SERVICE_KEYS.has(normalizeServiceKey(service));
-        const isPreferredCut = !userPlan.preferredCut || normalizeServiceKey(userPlan.preferredCut) === normalizeServiceKey(service);
+        const isCutService = CUT_SERVICE_KEYS.has(normalizeServiceKey(normalizedService));
+        const isPreferredCut =
+          !userPlan.preferredCut || normalizeServiceKey(userPlan.preferredCut) === normalizeServiceKey(normalizedService);
         const canUseCommon =
           userPlan.type === "common" &&
           isCutService &&
@@ -1038,8 +1751,8 @@ app.post(
             req.user.id,
             req.user.username,
             req.user.name || req.user.username,
-            String(phone).trim(),
-            String(service).trim(),
+            normalizedPhone,
+            normalizedService,
             serviceDuration,
             normalizedDay,
             String(time),
@@ -1058,44 +1771,94 @@ app.post(
         });
       }
 
-      const payment = buildPixPayment("EVLZ", "Evilazio Barbershop");
+      const paymentCode = buildInternalPaymentCode("EVLZ");
+      const payment = buildPixPayment("EVLZ", "Evilazio Barbershop", paymentCode);
       const expiresAt = buildPaymentExpiryDate();
 
       const insertPixBooking = await client.query(
         `
           INSERT INTO bookings (
             user_id, username, display_name, phone, service, duration_minutes,
-            day, time, status, payment_method, payment_pix_key, payment_code, payment_qr_text, expires_at
+            day, time, status, payment_method, payment_provider, payment_pix_key, payment_code, payment_qr_text, expires_at
           )
-          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending_payment', 'pix', $9, $10, $11, $12)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'pending_payment', 'pix', $9, $10, $11, $12, $13)
           RETURNING *;
         `,
         [
           req.user.id,
           req.user.username,
-          req.user.name || req.user.username,
-          String(phone).trim(),
-          String(service).trim(),
+            req.user.name || req.user.username,
+            normalizedPhone,
+          normalizedService,
           serviceDuration,
           normalizedDay,
           String(time),
+          shouldUseMercadoPago() ? "mercadopago" : "mock",
           payment.pixKey,
-          payment.paymentCode,
+          paymentCode,
           payment.qrText,
           expiresAt,
         ]
       );
+      const bookingRow = insertPixBooking.rows[0];
+
+      if (shouldUseMercadoPago()) {
+        const externalReference = `booking_${bookingRow.id}_${paymentCode}`;
+        const mercadoPagoPayment = await createMercadoPagoPixPayment({
+          amount: toMoneyAmount(servicePrice),
+          description: `Agendamento ${normalizedService} - Evilazio Barbershop`,
+          externalReference,
+          payerEmail: buildMercadoPagoPayerEmail(req.user),
+          metadata: {
+            bookingId: bookingRow.id,
+            paymentCode,
+            source: "evilazio-barbershop",
+          },
+        });
+
+        await client.query(
+          `
+            UPDATE bookings
+            SET payment_provider = 'mercadopago',
+                payment_provider_id = $2,
+                payment_external_reference = $3,
+                payment_qr_text = $4,
+                payment_pix_key = ''
+            WHERE id = $1;
+          `,
+          [bookingRow.id, mercadoPagoPayment.providerPaymentId || null, mercadoPagoPayment.externalReference, mercadoPagoPayment.qrCode]
+        );
+
+        await client.query("COMMIT");
+        return res.status(201).json({
+          message: "PIX Mercado Pago gerado. O horario sera confirmado automaticamente apos compensacao.",
+          bookingId: bookingRow.id,
+          durationMinutes: bookingRow.duration_minutes,
+          payment: {
+            provider: "mercadopago",
+            amount: toMoneyAmount(servicePrice),
+            pixKey: mercadoPagoPayment.qrCode,
+            paymentCode,
+            qrText: mercadoPagoPayment.qrCode,
+            qrImageUrl: mercadoPagoPayment.qrImageUrl,
+            ticketUrl: mercadoPagoPayment.ticketUrl || null,
+            expiresAt,
+          },
+        });
+      }
 
       await client.query("COMMIT");
-      const booking = parseBookingRow(insertPixBooking.rows[0]);
+      const booking = parseBookingRow(bookingRow);
 
       return res.status(201).json({
         message: "Pagamento PIX gerado. Aguarde confirmacao para liberar o horario como ocupado.",
         bookingId: booking.id,
         durationMinutes: booking.durationMinutes,
         payment: {
+          provider: "mock",
+          amount: toMoneyAmount(servicePrice),
           pixKey: payment.pixKey,
-          paymentCode: payment.paymentCode,
+          paymentCode,
           qrText: payment.qrText,
           qrImageUrl: payment.qrImageUrl,
           expiresAt,
@@ -1203,10 +1966,28 @@ app.post(
         req.body?.metadata?.purchase_id,
       10
     );
+    const providerPaymentId = String(
+      req.body?.providerPaymentId ||
+        req.body?.provider_payment_id ||
+        req.body?.paymentId ||
+        req.body?.payment_id ||
+        req.body?.metadata?.providerPaymentId ||
+        req.body?.metadata?.provider_payment_id ||
+        ""
+    ).trim();
+    const externalReference = String(
+      req.body?.externalReference || req.body?.external_reference || req.body?.metadata?.externalReference || ""
+    ).trim();
 
-    if (!paymentCode && !Number.isInteger(bookingId) && !Number.isInteger(purchaseId)) {
+    if (
+      !paymentCode &&
+      !providerPaymentId &&
+      !externalReference &&
+      !Number.isInteger(bookingId) &&
+      !Number.isInteger(purchaseId)
+    ) {
       return res.status(400).json({
-        message: "Informe paymentCode, bookingId ou purchaseId no webhook.",
+        message: "Informe paymentCode, providerPaymentId, externalReference, bookingId ou purchaseId no webhook.",
       });
     }
 
@@ -1219,181 +2000,91 @@ app.post(
     try {
       await client.query("BEGIN");
       await expirePendingPayments(client);
-
-      if (Number.isInteger(purchaseId)) {
-        const directPurchaseResult = await client.query(
-          `
-            SELECT *
-            FROM plan_purchases
-            WHERE id = $1
-              AND status = 'pending_payment'
-              AND (expires_at IS NULL OR expires_at > NOW())
-            LIMIT 1
-            FOR UPDATE;
-          `,
-          [purchaseId]
-        );
-
-        const directPurchase = directPurchaseResult.rows[0];
-        if (directPurchase) {
-          await client.query(
-            `
-              UPDATE plan_purchases
-              SET status = 'confirmed',
-                  paid_at = $2
-              WHERE id = $1;
-            `,
-            [directPurchase.id, paidAtValue]
-          );
-
-          await client.query(
-            `
-              UPDATE users
-              SET plan_type = $1,
-                  preferred_cut = '',
-                  plan_month_key = $2,
-                  common_cuts_used = 0,
-                  updated_at = NOW()
-              WHERE id = $3;
-            `,
-            [directPurchase.plan_type, getCurrentMonthKey(), directPurchase.user_id]
-          );
-
-          await client.query("COMMIT");
-          return res.json({
-            ok: true,
-            type: "plan_purchase",
-            id: directPurchase.id,
-            status: "confirmed",
-          });
-        }
-      }
-
-      if (Number.isInteger(bookingId)) {
-        const directBookingResult = await client.query(
-          `
-            SELECT *
-            FROM bookings
-            WHERE id = $1
-              AND status = 'pending_payment'
-              AND (expires_at IS NULL OR expires_at > NOW())
-            LIMIT 1
-            FOR UPDATE;
-          `,
-          [bookingId]
-        );
-
-        const directBooking = directBookingResult.rows[0];
-        if (directBooking) {
-          await client.query(
-            `
-              UPDATE bookings
-              SET status = 'confirmed',
-                  paid_at = $2
-              WHERE id = $1
-                AND status = 'pending_payment'
-              RETURNING id;
-            `,
-            [directBooking.id, paidAtValue]
-          );
-
-          await client.query("COMMIT");
-          return res.json({
-            ok: true,
-            type: "booking",
-            id: directBooking.id,
-            status: "confirmed",
-          });
-        }
-      }
-
-      const purchaseResult = await client.query(
-        `
-          SELECT *
-          FROM plan_purchases
-          WHERE payment_code = $1
-            AND status = 'pending_payment'
-            AND (expires_at IS NULL OR expires_at > NOW())
-          ORDER BY created_at DESC
-          LIMIT 1
-          FOR UPDATE;
-        `,
-        [paymentCode]
-      );
-
-      const purchase = purchaseResult.rows[0];
-      if (purchase) {
-        await client.query(
-          `
-            UPDATE plan_purchases
-            SET status = 'confirmed',
-                paid_at = $2
-            WHERE id = $1;
-          `,
-          [purchase.id, paidAtValue]
-        );
-
-        await client.query(
-          `
-            UPDATE users
-            SET plan_type = $1,
-                preferred_cut = '',
-                plan_month_key = $2,
-                common_cuts_used = 0,
-                updated_at = NOW()
-            WHERE id = $3;
-          `,
-          [purchase.plan_type, getCurrentMonthKey(), purchase.user_id]
-        );
-
-        await client.query("COMMIT");
-        return res.json({
-          ok: true,
-          type: "plan_purchase",
-          id: purchase.id,
-          status: "confirmed",
-        });
-      }
-
-      const bookingResult = await client.query(
-        `
-          SELECT *
-          FROM bookings
-          WHERE payment_code = $1
-            AND status = 'pending_payment'
-            AND (expires_at IS NULL OR expires_at > NOW())
-          ORDER BY created_at DESC
-          LIMIT 1
-          FOR UPDATE;
-        `,
-        [paymentCode]
-      );
-
-      const booking = bookingResult.rows[0];
-      if (booking) {
-        await client.query(
-          `
-            UPDATE bookings
-            SET status = 'confirmed',
-                paid_at = $2
-            WHERE id = $1
-              AND status = 'pending_payment'
-            RETURNING id;
-          `,
-          [booking.id, paidAtValue]
-        );
-
-        await client.query("COMMIT");
-        return res.json({
-          ok: true,
-          type: "booking",
-          id: booking.id,
-          status: "confirmed",
-        });
-      }
+      const confirmed = await confirmPaymentByReferences(client, {
+        paymentCode,
+        bookingId: Number.isInteger(bookingId) ? bookingId : null,
+        purchaseId: Number.isInteger(purchaseId) ? purchaseId : null,
+        providerPaymentId,
+        externalReference,
+        paidAtValue,
+      });
 
       await client.query("COMMIT");
+      if (confirmed) {
+        return res.json(confirmed);
+      }
       return res.status(404).json({ ok: false, message: "Pagamento pendente nao encontrado ou expirado." });
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  })
+);
+
+app.post(
+  "/api/payments/webhook/mercadopago",
+  asyncHandler(async (req, res) => {
+    if (!MERCADO_PAGO_ACCESS_TOKEN) {
+      return res.status(503).json({ message: "Mercado Pago nao configurado no backend." });
+    }
+
+    if (!validateMercadoPagoWebhookSignature(req)) {
+      return res.status(401).json({ message: "Assinatura do webhook Mercado Pago invalida." });
+    }
+
+    const topic = String(req.query?.topic || req.query?.type || req.body?.type || req.body?.topic || "").toLowerCase().trim();
+    if (topic && topic !== "payment") {
+      return res.json({ ok: true, ignored: true, reason: "topic_not_payment" });
+    }
+    const action = String(req.body?.action || "").toLowerCase().trim();
+    if (action && !action.startsWith("payment.")) {
+      return res.json({ ok: true, ignored: true, reason: "action_not_payment" });
+    }
+
+    const webhookPaymentId = getMercadoPagoWebhookDataId(req);
+    if (!webhookPaymentId) {
+      return res.status(400).json({ message: "Webhook Mercado Pago sem data.id de pagamento." });
+    }
+
+    const remotePayment = await getMercadoPagoPaymentById(webhookPaymentId);
+    const normalizedStatus = normalizeMercadoPagoStatus(remotePayment?.status);
+    if (normalizedStatus !== "paid") {
+      return res.json({ ok: true, ignored: true, reason: "payment_not_approved", status: remotePayment?.status || "" });
+    }
+
+    const metadata = remotePayment?.metadata || {};
+    const metadataBookingId = Number.parseInt(String(metadata?.bookingId || metadata?.booking_id || ""), 10);
+    const metadataPurchaseId = Number.parseInt(String(metadata?.purchaseId || metadata?.purchase_id || ""), 10);
+    const metadataPaymentCode = String(metadata?.paymentCode || metadata?.payment_code || "").trim();
+    const paymentApprovedAt = extractWebhookPaidAt({
+      paidAt: remotePayment?.date_approved || remotePayment?.date_last_updated || remotePayment?.date_created,
+    });
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await expirePendingPayments(client);
+      const confirmed = await confirmPaymentByReferences(client, {
+        paymentCode: metadataPaymentCode,
+        bookingId: Number.isInteger(metadataBookingId) ? metadataBookingId : null,
+        purchaseId: Number.isInteger(metadataPurchaseId) ? metadataPurchaseId : null,
+        providerPaymentId: String(remotePayment?.id || webhookPaymentId),
+        externalReference: String(remotePayment?.external_reference || ""),
+        paidAtValue: paymentApprovedAt,
+      });
+
+      await client.query("COMMIT");
+      if (confirmed) {
+        return res.json({ ...confirmed, provider: "mercadopago" });
+      }
+
+      return res.status(404).json({
+        ok: false,
+        provider: "mercadopago",
+        message: "Pagamento aprovado no Mercado Pago, mas sem reserva pendente correspondente.",
+      });
     } catch (error) {
       await client.query("ROLLBACK");
       throw error;
@@ -1547,6 +2238,16 @@ app.get(
   })
 );
 
+app.use((error, _req, res, next) => {
+  if (error?.type === "entity.too.large") {
+    return res.status(413).json({ message: "Payload muito grande." });
+  }
+  if (error instanceof SyntaxError && "body" in error) {
+    return res.status(400).json({ message: "JSON invalido na requisicao." });
+  }
+  return next(error);
+});
+
 app.use((error, _req, res, _next) => {
   console.error("Erro interno:", error);
   if (res.headersSent) {
@@ -1567,6 +2268,27 @@ Promise.resolve()
 
     if (typeof sweepTimer.unref === "function") {
       sweepTimer.unref();
+    }
+
+    const sessionSweepTimer = setInterval(() => {
+      cleanupExpiredSessions();
+    }, getSessionSweepIntervalMs());
+
+    if (typeof sessionSweepTimer.unref === "function") {
+      sessionSweepTimer.unref();
+    }
+
+    if (!IS_PRODUCTION && !ADMIN_PASSWORD) {
+      console.warn("ADMIN_PASSWORD nao definida. Em desenvolvimento, a senha inicial padrao do admin e 001212.");
+    }
+
+    if (shouldUseMercadoPago()) {
+      console.log("Pagamento PIX ativo com Mercado Pago.");
+      if (!getMercadoPagoNotificationUrl()) {
+        console.warn("MERCADO_PAGO_NOTIFICATION_URL nao definida. O webhook deve apontar para /api/payments/webhook/mercadopago.");
+      }
+    } else {
+      console.warn("Pagamento PIX em modo mock. Defina MERCADO_PAGO_ACCESS_TOKEN para usar PIX real.");
     }
 
     app.listen(PORT, () => {

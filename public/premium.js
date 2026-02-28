@@ -10,7 +10,9 @@ const planPaymentCard = document.getElementById("planPaymentCard");
 const planPaymentFeedback = document.getElementById("planPaymentFeedback");
 const planPixQrImage = document.getElementById("planPixQrImage");
 const planPixKey = document.getElementById("planPixKey");
+const planPixProviderInfo = document.getElementById("planPixProviderInfo");
 const copyPlanPixKeyBtn = document.getElementById("copyPlanPixKeyBtn");
+const planPixTicketLink = document.getElementById("planPixTicketLink");
 const planName = document.getElementById("planName");
 const planAmount = document.getElementById("planAmount");
 
@@ -206,6 +208,15 @@ createPlanPaymentBtn.addEventListener("click", async () => {
     planAmount.textContent = formatMoney(data.amount);
     planPixQrImage.src = data.payment.qrImageUrl;
     planPixKey.textContent = data.payment.pixKey;
+    planPixProviderInfo.textContent =
+      data.payment?.provider === "mercadopago" ? "Pagamento processado por Mercado Pago." : "Pagamento em modo local.";
+    if (data.payment?.ticketUrl) {
+      planPixTicketLink.href = data.payment.ticketUrl;
+      planPixTicketLink.classList.remove("hidden");
+    } else {
+      planPixTicketLink.href = "#";
+      planPixTicketLink.classList.add("hidden");
+    }
     planPaymentCard.classList.remove("hidden");
     setFeedback(data.message, "success");
     setPlanPaymentFeedback("Pagamento em analise. O plano ativa automaticamente apos compensacao PIX.", "");
@@ -221,10 +232,10 @@ createPlanPaymentBtn.addEventListener("click", async () => {
 copyPlanPixKeyBtn.addEventListener("click", () => {
   copyText(planPixKey.textContent.trim())
     .then((ok) => {
-      setPlanPaymentFeedback(ok ? "Chave PIX copiada." : "Nao foi possivel copiar a chave PIX.", ok ? "success" : "error");
+      setPlanPaymentFeedback(ok ? "Codigo PIX copiado." : "Nao foi possivel copiar o codigo PIX.", ok ? "success" : "error");
     })
     .catch(() => {
-      setPlanPaymentFeedback("Nao foi possivel copiar a chave PIX.", "error");
+      setPlanPaymentFeedback("Nao foi possivel copiar o codigo PIX.", "error");
     });
 });
 

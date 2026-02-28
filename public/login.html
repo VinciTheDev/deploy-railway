@@ -28,12 +28,12 @@
         <form id="loginForm" class="form auth-form">
           <label>
             Usuário
-            <input type="text" name="username" required />
+            <input type="text" name="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9._-]+" autocomplete="username" required />
           </label>
 
           <label>
             Senha
-            <input type="password" name="password" minlength="6" required />
+            <input type="password" name="password" minlength="6" maxlength="128" autocomplete="current-password" required />
           </label>
 
           <button type="submit">Entrar</button>
@@ -42,7 +42,7 @@
         <form id="registerForm" class="form auth-form hidden">
           <label>
             Usuário
-            <input type="text" name="username" required />
+            <input type="text" name="username" minlength="3" maxlength="32" pattern="[A-Za-z0-9._-]+" autocomplete="username" required />
           </label>
 
           <label>
@@ -57,7 +57,7 @@
 
           <label>
             Senha
-            <input type="password" name="password" minlength="6" required />
+            <input type="password" name="password" minlength="6" maxlength="128" autocomplete="new-password" required />
           </label>
 
           <button type="submit">Criar conta</button>
@@ -70,4 +70,3 @@
     <script src="auth.js"></script>
   </body>
 </html>
-

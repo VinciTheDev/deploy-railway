@@ -29,7 +29,7 @@
           </article>
         </div>
 
-        <div class="form" style="margin-top: 12px;">
+        <div class="form form-spaced-top">
           <label>
             Escolha o plano
             <select id="planTypeSelect">
@@ -51,8 +51,10 @@
           <div class="payment-data">
             <p><strong>Plano:</strong> <span id="planName"></span></p>
             <p><strong>Valor:</strong> <span id="planAmount"></span></p>
-            <p><strong>Chave PIX:</strong> <span id="planPixKey"></span></p>
-            <button id="copyPlanPixKeyBtn" type="button" class="outline-btn">Copiar chave PIX</button>
+            <p><strong>PIX copia e cola:</strong> <span id="planPixKey"></span></p>
+            <p id="planPixProviderInfo" class="section-label"></p>
+            <button id="copyPlanPixKeyBtn" type="button" class="outline-btn">Copiar codigo PIX</button>
+            <a id="planPixTicketLink" class="outline-btn hidden" href="#" target="_blank" rel="noopener noreferrer">Abrir comprovante PIX</a>
           </div>
         </div>
         <p id="planPaymentFeedback" class="feedback" aria-live="polite"></p>

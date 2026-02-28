@@ -111,7 +111,7 @@
 
           <label>
             Telefone
-            <input id="phoneInput" type="tel" required />
+            <input id="phoneInput" type="tel" minlength="8" maxlength="25" autocomplete="tel" required />
           </label>
 
           <label>
@@ -144,8 +144,10 @@
           <div class="payment-data">
             <p><strong>Servico:</strong> <span id="paymentService"></span></p>
             <p><strong>Tempo medio:</strong> <span id="paymentDuration"></span></p>
-            <p><strong>Chave PIX:</strong> <span id="pixKey"></span></p>
-            <button id="copyPixKeyBtn" type="button" class="outline-btn">Copiar chave PIX</button>
+            <p><strong>PIX copia e cola:</strong> <span id="pixKey"></span></p>
+            <p id="pixProviderInfo" class="section-label"></p>
+            <button id="copyPixKeyBtn" type="button" class="outline-btn">Copiar codigo PIX</button>
+            <a id="pixTicketLink" class="outline-btn hidden" href="#" target="_blank" rel="noopener noreferrer">Abrir comprovante PIX</a>
           </div>
         </div>
         <p id="paymentFeedback" class="feedback" aria-live="polite"></p>

@@ -41,7 +41,9 @@ const pixQrImage = document.getElementById("pixQrImage");
 const paymentService = document.getElementById("paymentService");
 const paymentDuration = document.getElementById("paymentDuration");
 const pixKey = document.getElementById("pixKey");
+const pixProviderInfo = document.getElementById("pixProviderInfo");
 const copyPixKeyBtn = document.getElementById("copyPixKeyBtn");
+const pixTicketLink = document.getElementById("pixTicketLink");
 
 let selectedTime = "";
 let currentUser = null;
@@ -362,6 +364,15 @@ async function createPayment() {
 
     pixQrImage.src = data.payment.qrImageUrl;
     pixKey.textContent = data.payment.pixKey;
+    pixProviderInfo.textContent =
+      data.payment?.provider === "mercadopago" ? "Pagamento processado por Mercado Pago." : "Pagamento em modo local.";
+    if (data.payment?.ticketUrl) {
+      pixTicketLink.href = data.payment.ticketUrl;
+      pixTicketLink.classList.remove("hidden");
+    } else {
+      pixTicketLink.href = "#";
+      pixTicketLink.classList.add("hidden");
+    }
     paymentCard.classList.remove("hidden");
     setFeedback(data.message, "success");
     setPaymentFeedback("Pagamento em analise. O horario sera confirmado automaticamente apos compensacao PIX.", "");
@@ -524,10 +535,10 @@ createPaymentBtn.addEventListener("click", () => {
 copyPixKeyBtn.addEventListener("click", () => {
   copyText(pixKey.textContent.trim())
     .then((ok) => {
-      setPaymentFeedback(ok ? "Chave PIX copiada." : "Nao foi possivel copiar a chave PIX.", ok ? "success" : "error");
+      setPaymentFeedback(ok ? "Codigo PIX copiado." : "Nao foi possivel copiar o codigo PIX.", ok ? "success" : "error");
     })
     .catch(() => {
-      setPaymentFeedback("Nao foi possivel copiar a chave PIX.", "error");
+      setPaymentFeedback("Nao foi possivel copiar o codigo PIX.", "error");
     });
 });
 
